@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         1080zyk 播放列表优化
 // @namespace    https://github.com/Story5/tampermonkey-js
-// @version      1.1.0
+// @version      1.1.2
 // @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、倒序排列
 // @author       Story5
 // @license      MIT
@@ -341,14 +341,8 @@
             }
         });
 
-        // 排序策略：
-        // - 全部是日期格式：按日期倒序（最新在前）
-        // - 否则：保持页面 DOM 原始顺序（通常是第01集→第N集正序）
-        const allDates = episodes.length > 0 && episodes.every(ep => ep.dateStr);
-        if (allDates) {
-            episodes.sort((a, b) => b.dateStr.localeCompare(a.dateStr));
-        }
-        log(`  - 有效集数: ${episodes.length}, 全部日期格式: ${allDates}`);
+        // 排序 / 分组决策在 renderGrid 中统一处理（提取阶段不做排序）
+        log(`  - 提取完成: ${episodes.length} 项`);
         return episodes;
     }
 
@@ -462,24 +456,22 @@
 
             info.innerHTML = `<strong>${src.name}</strong> &middot; 共 <strong>${eps.length}</strong> 集 &middot; 点击可复制视频链接`;
 
-            // 判断是否按年分组：全部是日期格式 且 跨 ≥ 2 个年份
-            const allDates = eps.length > 0 && eps.every(ep => ep.dateStr);
-            let shouldGroup = false;
-            if (allDates) {
-                const years = new Set(eps.map(ep => ep.dateStr.substring(0, 4)));
-                shouldGroup = years.size >= 2;
-            }
-            log(`renderGrid: ${src.name}, allDates=${allDates}, shouldGroup=${shouldGroup}`);
+            // ---- 统一排序+分组决策 ----
+            // 规则：存在日期项 且 日期跨 ≥ 2 个年份 → 倒序 + 按年分组
+            //       否则 → 正序 + 平铺
+            const dateItems = eps.filter(ep => ep.dateStr);
+            const yearSet = new Set(dateItems.map(ep => ep.dateStr.substring(0, 4)));
+            const shouldGroup = yearSet.size >= 2;
 
             if (shouldGroup) {
-                // ---- 按年分组渲染 ----
+                // 日期项倒序，按年分组
+                const sortedDates = [...dateItems].sort((a, b) => b.dateStr.localeCompare(a.dateStr));
                 const yearGroups = new Map();
-                eps.forEach(ep => {
+                sortedDates.forEach(ep => {
                     const year = ep.dateStr.substring(0, 4);
                     if (!yearGroups.has(year)) yearGroups.set(year, []);
                     yearGroups.get(year).push(ep);
                 });
-                // 年份倒序（最新年份在前）
                 const sortedYears = [...yearGroups.keys()].sort((a, b) => b.localeCompare(a));
 
                 sortedYears.forEach(year => {
@@ -496,15 +488,35 @@
                     const yearGrid = document.createElement('div');
                     yearGrid.className = 'zyk-year-grid';
                     yearEps.forEach(ep => yearGrid.appendChild(makeDateBtn(ep)));
-
                     group.appendChild(yearGrid);
                     grid.appendChild(group);
                 });
+
+                // 非日期项正序，追加在分组后面
+                const nonDates = eps.filter(ep => !ep.dateStr);
+                if (nonDates.length > 0) {
+                    nonDates.sort((a, b) =>
+                        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
+                    );
+                    // 小分隔
+                    const sep = document.createElement('div');
+                    sep.className = 'zyk-year-header';
+                    sep.innerHTML = '<span style="color:#999;">其他</span> &middot; <span class="zyk-year-count">' + nonDates.length + ' 项</span>';
+                    grid.appendChild(sep);
+
+                    const flatGrid = document.createElement('div');
+                    flatGrid.className = 'zyk-year-grid';
+                    nonDates.forEach(ep => flatGrid.appendChild(makeDateBtn(ep)));
+                    grid.appendChild(flatGrid);
+                }
             } else {
-                // ---- 平铺渲染（集数类或单一年份） ----
+                // 不分组的全部正序平铺
+                const sorted = [...eps].sort((a, b) =>
+                    a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
+                );
                 const flatGrid = document.createElement('div');
                 flatGrid.className = 'zyk-year-grid';
-                eps.forEach(ep => flatGrid.appendChild(makeDateBtn(ep)));
+                sorted.forEach(ep => flatGrid.appendChild(makeDateBtn(ep)));
                 grid.appendChild(flatGrid);
             }
         }
