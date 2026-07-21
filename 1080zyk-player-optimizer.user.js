@@ -4,6 +4,7 @@
 // @version      1.1.0
 // @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、倒序排列
 // @author       Story5
+// @license      MIT
 // @match        *://1080zyk1.com/*
 // @match        *://www.1080zyk1.com/*
 // @include      *://*1080zyk*/*
