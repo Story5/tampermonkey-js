@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         1080zyk 播放列表优化
 // @namespace    https://github.com/Story5/tampermonkey-js
-// @version      1.1.2
-// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、倒序排列
+// @version      1.1.3
+// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、手动切换正/倒序排序
 // @author       Story5
 // @license      MIT
 // @match        *://1080zyk1.com/*
@@ -103,10 +103,40 @@
     color: #999;
     background: #fafafa;
     border-bottom: 1px solid #f0f0f0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.zyk-info .zyk-info-text {
+    flex: 1;
 }
 
 .zyk-info strong {
     color: #666;
+}
+
+.zyk-sort-btn {
+    padding: 3px 10px;
+    border: 1px solid #d8d8d8;
+    border-radius: 4px;
+    background: #fff;
+    color: #666;
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.zyk-sort-btn:hover {
+    border-color: #4A90D9;
+    color: #4A90D9;
+}
+
+.zyk-sort-btn:active {
+    background: #f0f7ff;
 }
 
 /* 日期网格（主滚动容器） */
@@ -429,6 +459,9 @@
 
         // -- 状态 --
         let activeIndex = 0;
+        // 每个播放源当前的排序方向：'asc' 正序 / 'desc' 倒序
+        // 初始为 null，首次渲染时根据数据类型决定默认值
+        const sortStates = sourcesData.map(() => null);
 
         /**
          * 构造单个日期/集数按钮
@@ -454,25 +487,50 @@
             const src = sourcesData[index];
             const eps = src.episodes;
 
-            info.innerHTML = `<strong>${src.name}</strong> &middot; 共 <strong>${eps.length}</strong> 集 &middot; 点击可复制视频链接`;
-
             // ---- 统一排序+分组决策 ----
-            // 规则：存在日期项 且 日期跨 ≥ 2 个年份 → 倒序 + 按年分组
-            //       否则 → 正序 + 平铺
+            // 规则：存在日期项 且 日期跨 ≥ 2 个年份 → 按年分组（默认倒序）
+            //       否则 → 平铺（默认正序）
             const dateItems = eps.filter(ep => ep.dateStr);
             const yearSet = new Set(dateItems.map(ep => ep.dateStr.substring(0, 4)));
             const shouldGroup = yearSet.size >= 2;
 
+            // 初始化默认排序方向：跨年份日期默认倒序，其他默认正序
+            const defaultOrder = shouldGroup ? 'desc' : 'asc';
+            if (!sortStates[index]) sortStates[index] = defaultOrder;
+            const order = sortStates[index];
+
+            // 更新统计信息 + 排序按钮
+            info.innerHTML = `<span class="zyk-info-text"><strong>${src.name}</strong> &middot; 共 <strong>${eps.length}</strong> 集 &middot; 点击可复制视频链接</span>`;
+            const sortBtn = document.createElement('button');
+            sortBtn.className = 'zyk-sort-btn';
+            sortBtn.textContent = order === 'desc' ? '倒序' : '正序';
+            sortBtn.title = '点击切换排序方向';
+            sortBtn.addEventListener('click', () => {
+                sortStates[index] = order === 'desc' ? 'asc' : 'desc';
+                renderGrid(index);
+            });
+            info.appendChild(sortBtn);
+
+            log(`renderGrid: ${src.name}, shouldGroup=${shouldGroup}, order=${order}, eps=${eps.length}`);
+
+            // 通用 label 比较函数
+            const compareLabel = (a, b) =>
+                a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
+
             if (shouldGroup) {
-                // 日期项倒序，按年分组
-                const sortedDates = [...dateItems].sort((a, b) => b.dateStr.localeCompare(a.dateStr));
+                // 日期项按当前排序方向排列
+                const sortedDates = [...dateItems].sort((a, b) =>
+                    order === 'desc' ? b.dateStr.localeCompare(a.dateStr) : a.dateStr.localeCompare(b.dateStr)
+                );
                 const yearGroups = new Map();
                 sortedDates.forEach(ep => {
                     const year = ep.dateStr.substring(0, 4);
                     if (!yearGroups.has(year)) yearGroups.set(year, []);
                     yearGroups.get(year).push(ep);
                 });
-                const sortedYears = [...yearGroups.keys()].sort((a, b) => b.localeCompare(a));
+                const sortedYears = [...yearGroups.keys()].sort((a, b) =>
+                    order === 'desc' ? b.localeCompare(a) : a.localeCompare(b)
+                );
 
                 sortedYears.forEach(year => {
                     const yearEps = yearGroups.get(year);
@@ -492,13 +550,11 @@
                     grid.appendChild(group);
                 });
 
-                // 非日期项正序，追加在分组后面
+                // 非日期项按当前排序方向追加在分组后面
                 const nonDates = eps.filter(ep => !ep.dateStr);
                 if (nonDates.length > 0) {
-                    nonDates.sort((a, b) =>
-                        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
-                    );
-                    // 小分隔
+                    nonDates.sort((a, b) => order === 'desc' ? compareLabel(b, a) : compareLabel(a, b));
+
                     const sep = document.createElement('div');
                     sep.className = 'zyk-year-header';
                     sep.innerHTML = '<span style="color:#999;">其他</span> &middot; <span class="zyk-year-count">' + nonDates.length + ' 项</span>';
@@ -510,10 +566,8 @@
                     grid.appendChild(flatGrid);
                 }
             } else {
-                // 不分组的全部正序平铺
-                const sorted = [...eps].sort((a, b) =>
-                    a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
-                );
+                // 平铺：按当前排序方向统一排列
+                const sorted = [...eps].sort((a, b) => order === 'desc' ? compareLabel(b, a) : compareLabel(a, b));
                 const flatGrid = document.createElement('div');
                 flatGrid.className = 'zyk-year-grid';
                 sorted.forEach(ep => flatGrid.appendChild(makeDateBtn(ep)));
