@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         1080zyk 播放列表优化
 // @namespace    https://github.com/Story5/tampermonkey-js
-// @version      1.1.3
-// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、手动切换正/倒序排序
+// @version      1.1.4
+// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、手动切换正/倒序、一键复制全部链接
 // @author       Story5
 // @license      MIT
 // @match        *://1080zyk1.com/*
@@ -137,6 +137,22 @@
 
 .zyk-sort-btn:active {
     background: #f0f7ff;
+}
+
+/* 全部复制按钮（复用 sort-btn 基础样式，hover 用绿色强调） */
+.zyk-sort-btn.zyk-copy-all:hover {
+    border-color: #52c41a;
+    color: #52c41a;
+}
+
+.zyk-sort-btn.zyk-copy-all:active {
+    background: #f6ffed;
+}
+
+.zyk-sort-btn.zyk-copy-all.copied {
+    border-color: #52c41a;
+    color: #fff;
+    background: #52c41a;
 }
 
 /* 日期网格（主滚动容器） */
@@ -510,6 +526,36 @@
                 renderGrid(index);
             });
             info.appendChild(sortBtn);
+
+            // 全部复制按钮：按当前渲染顺序复制所有视频链接
+            const copyAllBtn = document.createElement('button');
+            copyAllBtn.className = 'zyk-sort-btn zyk-copy-all';
+            copyAllBtn.textContent = '全部复制';
+            copyAllBtn.title = '复制当前列表所有视频链接';
+            copyAllBtn.addEventListener('click', async () => {
+                const cmp = (a, b) =>
+                    a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
+                let ordered;
+                if (shouldGroup) {
+                    const sortedDates = [...dateItems].sort((a, b) =>
+                        order === 'desc' ? b.dateStr.localeCompare(a.dateStr) : a.dateStr.localeCompare(b.dateStr)
+                    );
+                    const nonDates = eps.filter(ep => !ep.dateStr).sort((a, b) =>
+                        order === 'desc' ? cmp(b, a) : cmp(a, b)
+                    );
+                    ordered = [...sortedDates, ...nonDates];
+                } else {
+                    ordered = [...eps].sort((a, b) => order === 'desc' ? cmp(b, a) : cmp(a, b));
+                }
+                const text = ordered.map(ep => ep.url).join('\n');
+                const ok = await copyToClipboard(text);
+                if (ok) {
+                    copyAllBtn.classList.add('copied');
+                    showToast(`全部 ${ordered.length} 条`, ordered[0]?.url || '');
+                    setTimeout(() => copyAllBtn.classList.remove('copied'), 800);
+                }
+            });
+            info.appendChild(copyAllBtn);
 
             log(`renderGrid: ${src.name}, shouldGroup=${shouldGroup}, order=${order}, eps=${eps.length}`);
 
