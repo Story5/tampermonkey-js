@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         1080zyk 播放列表优化
 // @namespace    https://github.com/Story5/tampermonkey-js
-// @version      1.1.4
-// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、手动切换正/倒序、一键复制全部链接
+// @version      1.1.5
+// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、手动切换正/倒序、一键复制全部链接、按年复制
 // @author       Story5
 // @license      MIT
 // @match        *://1080zyk1.com/*
@@ -277,6 +277,37 @@
     font-weight: 400;
     font-size: 12px;
     color: #999;
+}
+
+/* 年份标题右侧的「按年复制」按钮 */
+.zyk-year-copy-btn {
+    margin-left: auto;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 400;
+    color: #67c23a;
+    background: #f0f9eb;
+    border: 1px solid #e1f3d8;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    line-height: 1.4;
+}
+
+.zyk-year-copy-btn:hover {
+    background: #67c23a;
+    color: #fff;
+    border-color: #67c23a;
+}
+
+.zyk-year-copy-btn.copied {
+    background: #67c23a;
+    color: #fff;
+    border-color: #67c23a;
+}
+
+.zyk-year-copy-btn:active {
+    background: #5daf34;
 }
 
 /* 日期子网格（年分组内） */
@@ -584,9 +615,34 @@
                     const group = document.createElement('div');
                     group.className = 'zyk-year-group';
 
+                    // 年份标题 + 右侧按年复制按钮
                     const header = document.createElement('div');
                     header.className = 'zyk-year-header';
-                    header.innerHTML = `<span class="zyk-year-num">${year}</span> 年 &middot; <span class="zyk-year-count">${yearEps.length} 期</span>`;
+
+                    const titleSpan = document.createElement('span');
+                    titleSpan.innerHTML = `<span class="zyk-year-num">${year}</span> 年 &middot; <span class="zyk-year-count">${yearEps.length} 期</span>`;
+                    header.appendChild(titleSpan);
+
+                    const yearCopyBtn = document.createElement('button');
+                    yearCopyBtn.className = 'zyk-year-copy-btn';
+                    yearCopyBtn.textContent = '复制本年';
+                    yearCopyBtn.title = `复制 ${year} 年所有视频链接`;
+                    yearCopyBtn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const text = yearEps.map(ep => ep.url).join('\n');
+                        const ok = await copyToClipboard(text);
+                        if (ok) {
+                            yearCopyBtn.classList.add('copied');
+                            yearCopyBtn.textContent = '已复制';
+                            showToast(`${year} 年 ${yearEps.length} 条`, yearEps[0]?.url || '');
+                            setTimeout(() => {
+                                yearCopyBtn.classList.remove('copied');
+                                yearCopyBtn.textContent = '复制本年';
+                            }, 1000);
+                        }
+                    });
+                    header.appendChild(yearCopyBtn);
+
                     group.appendChild(header);
 
                     const yearGrid = document.createElement('div');
