@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         福利吧增强
 // @namespace    https://fuliba2025.net/
-// @icon         https://www.fuliba.de/favicon.ico
+// @icon         https://fuliba.net/favicon-portal.ico
 // @version      0.0.2
 // @description  福利吧全站增强：一键关闭/开启帖子中的图片，只显示文字。支持地址发布页（fuliba.de）下列出的全部主站与论坛地址；状态自动记忆，支持快捷键 Alt+I，按钮可拖动。
 // @author       story5
