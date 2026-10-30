@@ -4,6 +4,7 @@
 // @version      1.0.0
 // @description  在 BRAIN Learn 课程目录的每一节课右侧加一个勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示本课进度并可一键重置。
 // @author       story5
+// @license      MIT
 // @updateURL    https://raw.githubusercontent.com/Story5/tampermonkey-js/main/worldquant-learn-tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/Story5/tampermonkey-js/main/worldquant-learn-tracker.user.js
 // @match        https://platform.worldquantbrain.com/*
