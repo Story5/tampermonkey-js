@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         WorldQuant BRAIN 课程学习记录
+// @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.0.0
-// @description  在 BRAIN Learn 课程目录的每一节课右侧加一个勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示本课进度并可一键重置。
+// @version      1.1.0
+// @description  在 BRAIN Learn 的课程目录（每节课右侧）与 Documentation 文档目录（每个条目左侧）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/Story5/tampermonkey-js/main/worldquant-learn-tracker.user.js
@@ -17,14 +17,16 @@
  * 使用说明
  * 1. 安装 Tampermonkey（油猴）扩展。
  * 2. 新建脚本，把本文件内容整体粘贴进去，保存。
- * 3. 打开 https://platform.worldquantbrain.com/learn/courses/quantcepts/what-alpha
+ * 3. 课程页 https://platform.worldquantbrain.com/learn/courses/quantcepts/what-alpha
  *    每节课右侧（时长后面）会出现一个勾选框，勾上即记录为「已学习」。
- * 4. 右下角会显示「已学 3/19」的进度，点「重置」可清空当前课程的记录。
+ * 4. 文档页 https://platform.worldquantbrain.com/learn/documentation
+ *    每个条目前面（图标左侧）会出现一个勾选框。
+ * 5. 右下角会显示「已学 3/19」的进度，点「重置」可清空当前页面的记录。
  *
  * 备注
- * - 记录按「课程 URL + 课序号 + 标题」存放在 localStorage 的 wq-learn-progress-v1 里，
+ * - 记录按「页面路径 + 课序号/标题」存放在 localStorage 的 wq-learn-progress-v1 里，
  *   换浏览器 / 清缓存 / 无痕窗口不会同步。
- * - 页面是 React 单页应用，脚本用 MutationObserver 监听重渲染，切换课程会自动重新挂载勾选框。
+ * - 页面是 React 单页应用，脚本用 MutationObserver 监听重渲染，切换页面会自动重新挂载勾选框。
  */
 (function () {
   'use strict';
@@ -33,6 +35,7 @@
     storeKey: 'wq-learn-progress-v1',
     styleId: 'wq-learn-style',
     wrapClass: 'wq-box-wrap',
+    prependClass: 'wq-box-wrap--prepend',
     boxClass: 'wq-lesson-box',
     badgeId: 'wq-learn-badge'
   };
@@ -44,6 +47,8 @@
   var RE_DUR = /\d+\s*(?:h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)(?![a-z])|\b\d{1,2}:\d{2}\b/i;
   // 行尾的时长，用于从标题里剔除
   var RE_TAIL_DUR = /(?:\d+\s*(?:h|hr|hrs|hour|hours)\s*)?(?:\d+\s*(?:m|min|mins|minute|minutes)\s*)?\d+\s*(?:s|sec|secs|second|seconds)\s*$|\d+\s*(?:m|min|mins|minute|minutes)\s*$|\d{1,2}:\d{2}\s*$/i;
+  // 文档页每个分组下方的 "7 Articles" 统计
+  var RE_ARTICLES = /^(\d+)\s*articles?$/i;
 
   /* ------------------------------------------------------------------ */
   /* 存储                                                                */
@@ -68,7 +73,10 @@
   }
 
   function courseKey() {
-    return location.pathname.replace(/\/+$/, '') || '/learn';
+    var p = location.pathname.replace(/\/+$/, '') || '/learn';
+    // 文档正文页（/learn/documentation/xxx）与文档目录页共用同一份进度
+    if (/^\/learn\/documentation\/.+/.test(p)) return '/learn/documentation';
+    return p;
   }
 
   function isDone(key) {
@@ -102,6 +110,15 @@
 
   function inLearn() {
     return location.pathname.indexOf('/learn') === 0 || location.pathname.indexOf('/learn/') !== -1;
+  }
+
+  // 文档目录页（/learn/documentation）。文档正文页共用同一份进度，但不挂勾选框。
+  function isDocPage() {
+    return /^\/learn\/documentation\/?$/.test(location.pathname);
+  }
+
+  function isDocArticle() {
+    return /^\/learn\/documentation\/.+/.test(location.pathname);
   }
 
   /* ------------------------------------------------------------------ */
@@ -163,6 +180,111 @@
 
   var metaCache = new WeakMap();
 
+  /* ------------------------------------------------------------------ */
+  /* 识别文档条目（Documentation 页：无课序号、无时长，靠「N Articles」分组定位） */
+  /* ------------------------------------------------------------------ */
+
+  function isDocItem(el, asAnchor) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.closest('#' + CFG.badgeId)) return false;
+    if (el.classList && (el.classList.contains(CFG.wrapClass) || el.classList.contains(CFG.boxClass))) return false;
+
+    if (asAnchor) {
+      // 内部还套着链接，说明这是外层容器而不是条目本身
+      if (el.querySelector('a[href]')) return false;
+    } else {
+      if (el.childElementCount < 1 || el.childElementCount > 6) return false;
+      // 必须是「图标 + 文字」的一行
+      if (!el.querySelector('svg,img,i,[class*="icon"],[class*="Icon"],[class*="fa-"]')) return false;
+    }
+
+    var t = clean(el.innerText || el.textContent);
+    if (!t || t.length < 2 || t.length > 140) return false;
+    if (RE_ARTICLES.test(t)) return false;
+
+    var r = el.getBoundingClientRect();
+    if (r.width < 80 || r.height < 12 || r.height > 64) return false;
+    return true;
+  }
+
+  function docItemCandidates(root, asAnchor) {
+    var out = [];
+    var nodes = root.querySelectorAll(asAnchor ? 'a[href]' : '*');
+    for (var i = 0; i < nodes.length; i++) {
+      if (isDocItem(nodes[i], asAnchor)) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function findDocItems() {
+    if (!document.body) return [];
+
+    var out = [];
+    function addAll(list) {
+      for (var i = 0; i < list.length; i++) {
+        if (out.indexOf(list[i]) === -1) out.push(list[i]);
+      }
+    }
+
+    // 1) 以每个分组下方的 "7 Articles" 为锚点，向上找到包含条目的卡片
+    var all = document.body.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.childElementCount) continue;
+      if (!RE_ARTICLES.test(clean(el.textContent))) continue;
+
+      var p = el.parentElement;
+      for (var up = 0; up < 4 && p && p !== document.body; up++) {
+        var items = docItemCandidates(p, true);
+        if (items.length < 2) items = docItemCandidates(p, false);
+        if (items.length >= 2) {
+          addAll(items);
+          break;
+        }
+        p = p.parentElement;
+      }
+    }
+
+    // 2) 兜底：整页找指向文档的链接（不再扩大到所有 /learn/ 链接，避免把侧边导航也勾上）
+    if (!out.length) {
+      var links = document.body.querySelectorAll('a[href*="/documentation"]');
+      for (var j = 0; j < links.length; j++) {
+        if (isDocItem(links[j], true)) out.push(links[j]);
+      }
+    }
+
+    out.sort(function (a, b) {
+      var ra = a.getBoundingClientRect();
+      var rb = b.getBoundingClientRect();
+      return ra.top - rb.top || ra.left - rb.left;
+    });
+    return out;
+  }
+
+  function docMetaOf(el) {
+    if (metaCache.has(el)) return metaCache.get(el);
+
+    var text = '';
+    try {
+      text = clean(el.innerText || el.textContent);
+    } catch (e) {
+      text = clean(el.textContent);
+    }
+    if (!text) return null;
+
+    // 文档标题没有序号/时长，直接整段作为标题（emoji 会在生成 key 时被剔除）
+    var norm = text
+      .toLowerCase()
+      .replace(/[^0-9a-z\u4e00-\u9fa5]+/g, ' ')
+      .trim()
+      .slice(0, 56);
+    if (!norm) return null;
+
+    var meta = { idx: null, title: text, key: 'doc|' + norm };
+    metaCache.set(el, meta);
+    return meta;
+  }
+
   function metaOf(row) {
     if (metaCache.has(row)) return metaCache.get(row);
 
@@ -201,7 +323,7 @@
     return row;
   }
 
-  function ensureBox(row, meta) {
+  function ensureBox(row, meta, prepend) {
     var host = attachPoint(row);
     if (!host) return null;
 
@@ -209,7 +331,7 @@
 
     if (!wrap) {
       wrap = document.createElement('span');
-      wrap.className = CFG.wrapClass;
+      wrap.className = CFG.wrapClass + (prepend ? ' ' + CFG.prependClass : '');
 
       // 自绘勾选框（不用原生 input）：原生 checkbox 若被 preventDefault 会回滚勾选状态，
       // 而行本身常常包在 <a> 里，必须阻止默认跳转。
@@ -243,7 +365,8 @@
       });
 
       wrap.appendChild(box);
-      host.appendChild(wrap);
+      if (prepend) host.insertBefore(wrap, host.firstChild);
+      else host.appendChild(wrap);
     }
 
     var el = wrap.firstElementChild;
@@ -276,7 +399,7 @@
 
     badge = document.createElement('div');
     badge.id = CFG.badgeId;
-    badge.title = 'WorldQuant BRAIN 课程学习记录（保存在本机浏览器）';
+    badge.title = 'WorldQuant BRAIN 学习进度（保存在本机浏览器）';
 
     var txt = document.createElement('span');
     txt.className = 'wq-badge-text';
@@ -287,7 +410,7 @@
     reset.textContent = '重置';
     reset.addEventListener('click', function (e) {
       e.stopPropagation();
-      if (!window.confirm('清空当前课程的全部「已学习」记录？')) return;
+      if (!window.confirm('清空当前页面的全部「已学习」记录？')) return;
       clearCourse();
       var boxes = document.querySelectorAll('.' + CFG.boxClass);
       for (var i = 0; i < boxes.length; i++) boxes[i].setAttribute('aria-checked', 'false');
@@ -337,6 +460,7 @@
     s.id = CFG.styleId;
     s.textContent = [
       '.' + CFG.wrapClass + '{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;margin-left:8px;padding:1px;line-height:0;cursor:pointer;}',
+      '.' + CFG.wrapClass + '.' + CFG.prependClass + '{margin-left:0;margin-right:7px;}',
       '.' + CFG.boxClass + '{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;' +
         'width:16px;height:16px;border:1.5px solid #b3bfcc;border-radius:4px;background:#fff;cursor:pointer;' +
         'transition:background .12s ease,border-color .12s ease;flex:0 0 auto;-webkit-user-select:none;user-select:none;}',
@@ -380,15 +504,27 @@
     injectStyle();
     if (mo) mo.disconnect();
     try {
-      var rows = findRows();
-      var done = 0;
-      for (var i = 0; i < rows.length; i++) {
-        var meta = metaOf(rows[i]);
-        if (!meta) continue;
-        var box = ensureBox(rows[i], meta);
-        if (box && box.getAttribute('aria-checked') === 'true') done++;
+      var items = [];
+
+      if (isDocPage()) {
+        var docs = findDocItems();
+        for (var d = 0; d < docs.length; d++) items.push({ el: docs[d], doc: true });
+      } else {
+        var rows = findRows();
+        for (var i = 0; i < rows.length; i++) items.push({ el: rows[i], doc: false });
       }
-      updateBadge(done, rows.length);
+
+      var done = 0;
+      var total = 0;
+      for (var k = 0; k < items.length; k++) {
+        var meta = items[k].doc ? docMetaOf(items[k].el) : metaOf(items[k].el);
+        if (!meta) continue;
+        var box = ensureBox(items[k].el, meta, items[k].doc);
+        if (!box) continue;
+        total++;
+        if (box.getAttribute('aria-checked') === 'true') done++;
+      }
+      updateBadge(done, total);
     } catch (e) {
       /* 页面结构变化时不让脚本整体挂掉 */
       console && console.debug && console.debug('[wq-tracker]', e);
