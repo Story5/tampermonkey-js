@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.2.2
+// @version      1.2.3
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -42,7 +42,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.2.2';
+  var VERSION = '1.2.3';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -526,18 +526,32 @@
     return badge;
   }
 
+  // 这些页面本来就应该有条目；识别到 0 条时给个可见提示，方便区分「脚本没跑」和「没认出条目」
+  function isListPage() {
+    return isDocPage() || isOperatorPage() || /^\/learn\/courses\/[^/]+\/?$/.test(location.pathname);
+  }
+
   function updateBadge(done, total) {
     var badge = document.getElementById(CFG.badgeId);
     if (!badge) {
-      if (total <= 0) return;
+      if (total <= 0 && !isListPage()) return;
       badge = ensureBadge();
     }
+    var txt = badge.querySelector('.wq-badge-text');
+
     if (total <= 0) {
-      badge.style.display = 'none';
+      if (!isListPage()) {
+        badge.style.display = 'none';
+        return;
+      }
+      badge.style.display = 'flex';
+      badge.style.opacity = '0.9';
+      if (txt) txt.textContent = 'v' + VERSION + ' 已运行 · 未识别到条目';
       return;
     }
+
     badge.style.display = 'flex';
-    var txt = badge.querySelector('.wq-badge-text');
+    badge.style.opacity = '1';
     if (txt) {
       txt.textContent = '已学 ' + done + ' / ' + total + (done >= total ? ' 🎉' : '');
     }
