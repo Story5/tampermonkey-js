@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.2.0
+// @version      1.2.1
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -41,6 +41,8 @@
     boxClass: 'wq-lesson-box',
     badgeId: 'wq-learn-badge'
   };
+
+  var VERSION = '1.2.1';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -605,12 +607,13 @@
     injectStyle();
     if (mo) mo.disconnect();
     try {
+      var mode = isDocPage() ? 'doc' : isOperatorPage() ? 'op' : 'lesson';
       var items = [];
 
-      if (isDocPage()) {
+      if (mode === 'doc') {
         var docs = findDocItems();
         for (var d = 0; d < docs.length; d++) items.push({ el: docs[d], mode: 'doc' });
-      } else if (isOperatorPage()) {
+      } else if (mode === 'op') {
         var ops = findOperatorItems();
         for (var o = 0; o < ops.length; o++) items.push({ el: ops[o], mode: 'op' });
       } else {
@@ -630,12 +633,28 @@
         if (box.getAttribute('aria-checked') === 'true') done++;
       }
       updateBadge(done, total);
+
+      // 自检日志：在控制台里能直接看到脚本是否运行、当前页识别到多少条目
+      selfCheck(mode, total);
     } catch (e) {
       /* 页面结构变化时不让脚本整体挂掉 */
       console && console.debug && console.debug('[wq-tracker]', e);
     } finally {
       observe();
     }
+  }
+
+  var lastCheckKey = '';
+
+  function selfCheck(mode, total) {
+    var key = mode + '|' + total + '|' + location.pathname;
+    if (key === lastCheckKey) return; // 避免重渲染时刷屏
+    lastCheckKey = key;
+    if (typeof console === 'undefined' || !console.debug) return;
+    console.debug(
+      '[WQ] v' + VERSION + ' path=' + location.pathname + ' mode=' + mode + ' items=' + total +
+      (total === 0 ? '  ← 没识别到条目，请把本行和页面 DOM 片段发给开发者' : '')
+    );
   }
 
   var pending = false;
@@ -680,6 +699,10 @@
     }, 800);
 
     schedule();
+  }
+
+  if (typeof console !== 'undefined' && console.debug) {
+    console.debug('[WQ] script v' + VERSION + ' loaded on ' + location.href);
   }
 
   boot();
