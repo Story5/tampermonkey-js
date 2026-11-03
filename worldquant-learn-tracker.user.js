@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.4.1
-// @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
+// @version      1.5.0
+// @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）、帮助中心术语表（每个术语标题前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/Story5/tampermonkey-js/main/worldquant-learn-tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/Story5/tampermonkey-js/main/worldquant-learn-tracker.user.js
 // @match        https://platform.worldquantbrain.com/*
+// @match        https://support.worldquantbrain.com/*
 // @run-at       document-idle
 // @grant        none
 // @noframes
@@ -23,7 +24,9 @@
  *    每个条目前面（图标左侧）会出现一个勾选框。
  * 5. 操作符页 https://platform.worldquantbrain.com/learn/operators
  *    每个操作符签名（如 rank(x)）前面会出现一个勾选框。
- * 6. 右下角会显示「已学 3/19」的进度，点「重置」可清空当前页面的记录。
+ * 6. 帮助中心术语表 https://support.worldquantbrain.com/hc/en-us/articles/4902349883927-...
+ *    每个术语标题（h3）前面会出现一个勾选框；进度单独存在该站点下。
+ * 7. 右下角会显示「已学 3/19」的进度，点「重置」可清空当前页面的记录。
  *
  * 备注
  * - 记录按「页面路径 + 课序号/标题」存放在 localStorage 的 wq-learn-progress-v1 里，
@@ -38,11 +41,12 @@
     styleId: 'wq-learn-style',
     wrapClass: 'wq-box-wrap',
     prependClass: 'wq-box-wrap--prepend',
+    headingClass: 'wq-box-wrap--heading',
     boxClass: 'wq-lesson-box',
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.4.1';
+  var VERSION = '1.5.0';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -80,6 +84,9 @@
     var p = location.pathname.replace(/\/+$/, '') || '/learn';
     // 文档正文页（/learn/documentation/xxx）与文档目录页共用同一份进度
     if (/^\/learn\/documentation\/.+/.test(p)) return '/learn/documentation';
+    // 帮助中心文章只用文章 id 当桶名：标题 slug 变了、语言前缀变了都不丢进度
+    var m = p.match(/^\/hc\/[^/]+\/articles\/(\d+)/);
+    if (m) return '/hc/articles/' + m[1];
     return p;
   }
 
@@ -128,6 +135,110 @@
 
   function isDocArticle() {
     return /^\/learn\/documentation\/.+/.test(location.pathname);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 帮助中心术语表（support.worldquantbrain.com，Zendesk 文章页）        */
+  /* ------------------------------------------------------------------ */
+
+  // 只在这些文章里挂勾选框，避免把普通帮助文档的每个小标题都勾上。
+  // 以后想加别的术语表文章，把文章 id 追加到这里即可。
+  var GLOSSARY_ARTICLE_IDS = ['4902349883927'];
+
+  function isGlossaryPage() {
+    // ?wqgloss=1 强制启用：本地调试用，或文章 id 变了、想给别的术语表页也挂上时用
+    if (/(^|[?&])wqgloss=1(&|$)/.test(location.search)) return true;
+    if (!/(^|\.)support\.worldquantbrain\.com$/i.test(location.hostname)) return false;
+    var m = location.pathname.match(/\/articles\/(\d+)/);
+    if (!m) return false;
+    return GLOSSARY_ARTICLE_IDS.indexOf(m[1]) !== -1;
+  }
+
+  // 术语正文容器：Zendesk 各主题的类名不同，按优先级挨个试
+  var GLOSS_CONTAINERS = ['.article-body', '[data-article-body]', '.article__body', '.article-body-content', 'article', 'main', '[role="main"]'];
+
+  function articleRoot() {
+    for (var i = 0; i < GLOSS_CONTAINERS.length; i++) {
+      var el = document.querySelector(GLOSS_CONTAINERS[i]);
+      if (el && el.querySelector('h3')) return el;
+    }
+    return document.body;
+  }
+
+  // 侧边栏 / 相关文章里的 h3 不算术语
+  function inSidebarArea(el) {
+    return !!el.closest('nav, aside, header, footer, [class*="related"], [class*="sidebar"], [class*="breadcrumb"], [role="navigation"]');
+  }
+
+  function findGlossaryHeads() {
+    var root = articleRoot();
+    if (!root) return [];
+    var hs = root.querySelectorAll('h3');
+    var out = [];
+    for (var i = 0; i < hs.length; i++) {
+      var h = hs[i];
+      if (h.closest('#' + CFG.badgeId)) continue;
+      if (inSidebarArea(h)) continue;
+      // 折叠/隐藏的标题先跳过，展开后下一轮扫描会补上
+      if (!h.getClientRects().length) continue;
+      var t = leadText(h) || clean(h.textContent);
+      if (!t || t.length > 120) continue;
+      out.push(h);
+    }
+    return out;
+  }
+
+  // 术语 title 用标题自身文字；key 用 slug，重名的按出现顺序加 #2、#3
+  function collectGlossary() {
+    var hs = findGlossaryHeads();
+    var seen = {};
+    var out = [];
+
+    for (var i = 0; i < hs.length; i++) {
+      var h = hs[i];
+      var title = (leadText(h) || clean(h.textContent)).slice(0, 120);
+      var slug = title
+        .toLowerCase()
+        .replace(/[^0-9a-z\u4e00-\u9fa5]+/g, ' ')
+        .trim()
+        .slice(0, 64);
+      if (!slug) continue;
+
+      var n = (seen[slug] || 0) + 1;
+      seen[slug] = n;
+
+      out.push({
+        el: h,
+        meta: {
+          idx: null,
+          title: title,
+          key: 'gl|' + slug + (n > 1 ? '#' + n : ''),
+          srcId: h.id,
+          srcText: title
+        }
+      });
+    }
+    return out;
+  }
+
+  // 插在 h3 内部、术语文字之前：标题是块级元素，行内框放在它外面会单独占一行
+  function ensureGlossBox(h, meta) {
+    var wrap = null;
+    for (var c = h.firstElementChild; c; c = c.nextElementSibling) {
+      if (c.classList && c.classList.contains(CFG.wrapClass)) { wrap = c; break; }
+    }
+
+    if (!wrap || !wrap.firstElementChild) {
+      wrap = document.createElement('span');
+      wrap.className = CFG.wrapClass + ' ' + CFG.prependClass + ' ' + CFG.headingClass;
+      wrap.appendChild(createBox(meta));
+      h.insertBefore(wrap, h.firstChild);
+    }
+
+    var box = wrap.firstElementChild;
+    if (!box) return null;
+    setVisual(box, meta, isDone(meta.key));
+    return box;
   }
 
   /* ------------------------------------------------------------------ */
@@ -690,7 +801,7 @@
 
   // 这些页面本来就应该有条目；识别到 0 条时给个可见提示，方便区分「脚本没跑」和「没认出条目」
   function isListPage() {
-    return isDocPage() || isOperatorPage() || /^\/learn\/courses\/[^/]+\/?$/.test(location.pathname);
+    return isGlossaryPage() || isDocPage() || isOperatorPage() || /^\/learn\/courses\/[^/]+\/?$/.test(location.pathname);
   }
 
   function updateBadge(done, total) {
@@ -740,6 +851,9 @@
     s.textContent = [
       '.' + CFG.wrapClass + '{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;margin-left:8px;padding:1px;line-height:0;cursor:pointer;}',
       '.' + CFG.wrapClass + '.' + CFG.prependClass + '{margin-left:0;margin-right:7px;vertical-align:middle;}',
+      // 标题里的框：h3 字号大，靠 baseline 对齐会偏，单独微调
+      '.' + CFG.wrapClass + '.' + CFG.headingClass + '{margin-right:10px;vertical-align:-1px;}',
+      '.' + CFG.headingClass + ' .' + CFG.boxClass + '{width:17px;height:17px;}',
       '.' + CFG.boxClass + '{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;' +
         'width:16px;height:16px;border:1.5px solid #b3bfcc;border-radius:4px;background:#fff;cursor:pointer;' +
         'transition:background .12s ease,border-color .12s ease;flex:0 0 auto;-webkit-user-select:none;user-select:none;}',
@@ -773,6 +887,11 @@
 
   function run() {
     if (!document.body) return;
+
+    if (isGlossaryPage()) {
+      runGlossary();
+      return;
+    }
 
     if (!inLearn()) {
       var b = document.getElementById(CFG.badgeId);
@@ -819,6 +938,28 @@
       selfCheck(mode, total);
     } catch (e) {
       /* 页面结构变化时不让脚本整体挂掉 */
+      console && console.debug && console.debug('[wq-tracker]', e);
+    } finally {
+      observe();
+    }
+  }
+
+  function runGlossary() {
+    injectStyle();
+    if (mo) mo.disconnect();
+    try {
+      var list = collectGlossary();
+      var done = 0;
+      var total = 0;
+      for (var i = 0; i < list.length; i++) {
+        var box = ensureGlossBox(list[i].el, list[i].meta);
+        if (!box) continue;
+        total++;
+        if (box.getAttribute('aria-checked') === 'true') done++;
+      }
+      updateBadge(done, total);
+      selfCheck('glossary', total);
+    } catch (e) {
       console && console.debug && console.debug('[wq-tracker]', e);
     } finally {
       observe();
