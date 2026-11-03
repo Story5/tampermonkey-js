@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.1.0
-// @description  在 BRAIN Learn 的课程目录（每节课右侧）与 Documentation 文档目录（每个条目左侧）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
+// @version      1.2.0
+// @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/Story5/tampermonkey-js/main/worldquant-learn-tracker.user.js
@@ -21,7 +21,9 @@
  *    每节课右侧（时长后面）会出现一个勾选框，勾上即记录为「已学习」。
  * 4. 文档页 https://platform.worldquantbrain.com/learn/documentation
  *    每个条目前面（图标左侧）会出现一个勾选框。
- * 5. 右下角会显示「已学 3/19」的进度，点「重置」可清空当前页面的记录。
+ * 5. 操作符页 https://platform.worldquantbrain.com/learn/operators
+ *    每个操作符签名（如 rank(x)）前面会出现一个勾选框。
+ * 6. 右下角会显示「已学 3/19」的进度，点「重置」可清空当前页面的记录。
  *
  * 备注
  * - 记录按「页面路径 + 课序号/标题」存放在 localStorage 的 wq-learn-progress-v1 里，
@@ -115,6 +117,11 @@
   // 文档目录页（/learn/documentation）。文档正文页共用同一份进度，但不挂勾选框。
   function isDocPage() {
     return /^\/learn\/documentation\/?$/.test(location.pathname);
+  }
+
+  // 操作符页（/learn/operators）
+  function isOperatorPage() {
+    return /^\/learn\/operators\/?$/.test(location.pathname);
   }
 
   function isDocArticle() {
@@ -285,6 +292,98 @@
     return meta;
   }
 
+  /* ------------------------------------------------------------------ */
+  /* 识别操作符（/learn/operators：靠 "name(args)" 签名定位）              */
+  /* ------------------------------------------------------------------ */
+
+  // rank(x) / ts_mean(x, d) / bucket(rank(x), range="0,1,0.1") —— 允许一层嵌套括号
+  var RE_SIG = /^[a-z][a-z0-9_]{0,40}\((?:[^()]|\([^()]*\))*\)$/i;
+
+  function opCandidates(strict) {
+    if (!document.body) return [];
+
+    var out = [];
+    var seen = {};
+    var all = document.body.querySelectorAll('*');
+
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.childElementCount) continue; // 只认叶子节点，签名通常是独立的 code/chip
+      if (el.closest('#' + CFG.badgeId)) continue;
+      if (el.classList && (el.classList.contains(CFG.wrapClass) || el.classList.contains(CFG.boxClass))) continue;
+
+      var t = clean(el.textContent);
+      if (!t || t.length < 4 || t.length > 90) continue;
+      if (!RE_SIG.test(t)) continue;
+
+      var r = el.getBoundingClientRect();
+      if (r.width < 16 || r.height < 8 || r.height > 48) continue;
+
+      var p = el.parentElement;
+      if (!p) continue;
+      var pt = clean(p.textContent);
+      // 严格模式：这一行必须就是从这个签名开始，排除正文里的用法举例
+      if (strict && pt.indexOf(t) !== 0) continue;
+      // 宽松模式：父块基本就是这一条（防止签名前面还有图标/序号之类）
+      if (!strict && (pt.length > 120 || Math.abs(pt.indexOf(t)) > 40)) continue;
+
+      var key = t.toLowerCase();
+      if (seen[key]) continue;
+      seen[key] = 1;
+      out.push(el);
+    }
+    return out;
+  }
+
+  function findOperatorItems() {
+    var items = opCandidates(true);
+    if (items.length >= 3) return items;
+    var loose = opCandidates(false);
+    return loose.length > items.length ? loose : items;
+  }
+
+  function opMetaOf(leaf) {
+    if (metaCache.has(leaf)) return metaCache.get(leaf);
+    var sig = clean(leaf.textContent);
+    if (!sig) return null;
+    var meta = { idx: null, title: sig, key: 'op|' + sig.toLowerCase() };
+    metaCache.set(leaf, meta);
+    return meta;
+  }
+
+  var opBoxCache = new WeakMap();
+
+  function ensureOpBox(leaf, meta) {
+    var cached = opBoxCache.get(leaf);
+    if (cached && cached.isConnected) {
+      setVisual(cached, meta, isDone(meta.key));
+      return cached;
+    }
+
+    var p = leaf.parentElement;
+    if (!p) return null;
+
+    // 页面上已经有（例如上层只替换了签名节点、保留了行容器时）
+    var prev = leaf.previousElementSibling;
+    if (prev && prev.classList && prev.classList.contains(CFG.wrapClass) && prev.firstElementChild) {
+      var reused = prev.firstElementChild;
+      opBoxCache.set(leaf, reused);
+      setVisual(reused, meta, isDone(meta.key));
+      return reused;
+    }
+
+    var wrap = document.createElement('span');
+    wrap.className = CFG.wrapClass + ' ' + CFG.prependClass;
+
+    var box = createBox(meta);
+    wrap.appendChild(box);
+    p.insertBefore(wrap, leaf);
+
+    opBoxCache.set(leaf, box);
+    setVisual(box, meta, isDone(meta.key));
+    return box;
+  }
+
   function metaOf(row) {
     if (metaCache.has(row)) return metaCache.get(row);
 
@@ -323,6 +422,39 @@
     return row;
   }
 
+  // 自绘勾选框（不用原生 input）：原生 checkbox 若被 preventDefault 会回滚勾选状态，
+  // 而行本身常常包在 <a> 里，必须阻止默认跳转。
+  function createBox(meta) {
+    var box = document.createElement('span');
+    box.className = CFG.boxClass;
+    box.setAttribute('role', 'checkbox');
+    box.setAttribute('tabindex', '0');
+    box.setAttribute('aria-checked', 'false');
+
+    box.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      commit(box, meta, box.getAttribute('aria-checked') !== 'true');
+    });
+    box.addEventListener('keydown', function (e) {
+      if (e.key === ' ' || e.key === 'Enter' || e.key === 'Spacebar') {
+        e.preventDefault();
+        e.stopPropagation();
+        commit(box, meta, box.getAttribute('aria-checked') !== 'true');
+      }
+    });
+    box.addEventListener('mousedown', function (e) {
+      e.stopPropagation();
+    });
+    box.addEventListener('pointerdown', function (e) {
+      e.stopPropagation();
+    });
+    box.addEventListener('dblclick', function (e) {
+      e.stopPropagation();
+    });
+    return box;
+  }
+
   function ensureBox(row, meta, prepend) {
     var host = attachPoint(row);
     if (!host) return null;
@@ -333,38 +465,7 @@
       wrap = document.createElement('span');
       wrap.className = CFG.wrapClass + (prepend ? ' ' + CFG.prependClass : '');
 
-      // 自绘勾选框（不用原生 input）：原生 checkbox 若被 preventDefault 会回滚勾选状态，
-      // 而行本身常常包在 <a> 里，必须阻止默认跳转。
-      var box = document.createElement('span');
-      box.className = CFG.boxClass;
-      box.setAttribute('role', 'checkbox');
-      box.setAttribute('tabindex', '0');
-      box.setAttribute('aria-checked', 'false');
-
-      box.addEventListener('click', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        var next = box.getAttribute('aria-checked') !== 'true';
-        commit(box, meta, next);
-      });
-      box.addEventListener('keydown', function (e) {
-        if (e.key === ' ' || e.key === 'Enter' || e.key === 'Spacebar') {
-          e.preventDefault();
-          e.stopPropagation();
-          commit(box, meta, box.getAttribute('aria-checked') !== 'true');
-        }
-      });
-      box.addEventListener('mousedown', function (e) {
-        e.stopPropagation();
-      });
-      box.addEventListener('pointerdown', function (e) {
-        e.stopPropagation();
-      });
-      box.addEventListener('dblclick', function (e) {
-        e.stopPropagation();
-      });
-
-      wrap.appendChild(box);
+      wrap.appendChild(createBox(meta));
       if (prepend) host.insertBefore(wrap, host.firstChild);
       else host.appendChild(wrap);
     }
@@ -460,7 +561,7 @@
     s.id = CFG.styleId;
     s.textContent = [
       '.' + CFG.wrapClass + '{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;margin-left:8px;padding:1px;line-height:0;cursor:pointer;}',
-      '.' + CFG.wrapClass + '.' + CFG.prependClass + '{margin-left:0;margin-right:7px;}',
+      '.' + CFG.wrapClass + '.' + CFG.prependClass + '{margin-left:0;margin-right:7px;vertical-align:middle;}',
       '.' + CFG.boxClass + '{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;' +
         'width:16px;height:16px;border:1.5px solid #b3bfcc;border-radius:4px;background:#fff;cursor:pointer;' +
         'transition:background .12s ease,border-color .12s ease;flex:0 0 auto;-webkit-user-select:none;user-select:none;}',
@@ -508,18 +609,22 @@
 
       if (isDocPage()) {
         var docs = findDocItems();
-        for (var d = 0; d < docs.length; d++) items.push({ el: docs[d], doc: true });
+        for (var d = 0; d < docs.length; d++) items.push({ el: docs[d], mode: 'doc' });
+      } else if (isOperatorPage()) {
+        var ops = findOperatorItems();
+        for (var o = 0; o < ops.length; o++) items.push({ el: ops[o], mode: 'op' });
       } else {
         var rows = findRows();
-        for (var i = 0; i < rows.length; i++) items.push({ el: rows[i], doc: false });
+        for (var i = 0; i < rows.length; i++) items.push({ el: rows[i], mode: 'lesson' });
       }
 
       var done = 0;
       var total = 0;
       for (var k = 0; k < items.length; k++) {
-        var meta = items[k].doc ? docMetaOf(items[k].el) : metaOf(items[k].el);
+        var it = items[k];
+        var meta = it.mode === 'doc' ? docMetaOf(it.el) : it.mode === 'op' ? opMetaOf(it.el) : metaOf(it.el);
         if (!meta) continue;
-        var box = ensureBox(items[k].el, meta, items[k].doc);
+        var box = it.mode === 'op' ? ensureOpBox(it.el, meta) : ensureBox(it.el, meta, it.mode === 'doc');
         if (!box) continue;
         total++;
         if (box.getAttribute('aria-checked') === 'true') done++;
