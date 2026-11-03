@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.2.1
+// @version      1.2.2
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -42,7 +42,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.2.1';
+  var VERSION = '1.2.2';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -647,13 +647,19 @@
   var lastCheckKey = '';
 
   function selfCheck(mode, total) {
+    // 给诊断片段 / 控制台留个标记，没装或没运行时可据此判断
+    try {
+      window.__WQ = { version: VERSION, path: location.pathname, mode: mode, items: total };
+    } catch (e) {}
+
     var key = mode + '|' + total + '|' + location.pathname;
     if (key === lastCheckKey) return; // 避免重渲染时刷屏
     lastCheckKey = key;
-    if (typeof console === 'undefined' || !console.debug) return;
-    console.debug(
+    if (typeof console === 'undefined' || !console.log) return;
+    // 用 log 而不是 debug：Chrome 默认级别不显示 debug，排障时看不到
+    console.log(
       '[WQ] v' + VERSION + ' path=' + location.pathname + ' mode=' + mode + ' items=' + total +
-      (total === 0 ? '  ← 没识别到条目，请把本行和页面 DOM 片段发给开发者' : '')
+      (total === 0 ? '  ← 没识别到条目，请执行 wq-diagnose.js 并把输出发给开发者' : '')
     );
   }
 
@@ -701,8 +707,8 @@
     schedule();
   }
 
-  if (typeof console !== 'undefined' && console.debug) {
-    console.debug('[WQ] script v' + VERSION + ' loaded on ' + location.href);
+  if (typeof console !== 'undefined' && console.log) {
+    console.log('[WQ] script v' + VERSION + ' loaded on ' + location.href);
   }
 
   boot();
