@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.3.0
+// @version      1.4.1
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -42,7 +42,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.3.0';
+  var VERSION = '1.4.1';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -295,11 +295,127 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* 识别操作符（/learn/operators：靠 "name(args)" 签名定位）              */
+  /* 识别操作符（/learn/operators）                                        */
   /* ------------------------------------------------------------------ */
+
+  // 真实页面用 react-table 渲染，定义单元格形如：
+  // <div class="rt-td rt-td--definition" role="gridcell">
+  //   <div id="abs" class="operator-explorer__definition-content ...">abs(x)
+  //     <div><div class="ui grey tiny label operator-explorer__scope-label">base</div></div>
+  //   </div>
+  // </div>
+  var OP_DEF_SELECTOR = '.rt-td--definition, [class*="operator-explorer__definition"]';
 
   // rank(x) / ts_mean(x, d) / bucket(rank(x), range="0,1,0.1") —— 允许一层嵌套括号、允许名字与括号间有空格
   var RE_SIG = /^[a-z][a-z0-9_]{0,40}\s*\((?:[^()]|\([^()]*\))*\)$/i;
+
+  // 主路径：直接找"定义单元格"（比文本正则稳得多，且能拿到 id 当 key）
+  function findOperatorCells() {
+    if (!document.body) return [];
+    var defs = document.body.querySelectorAll(OP_DEF_SELECTOR);
+    var out = [];
+    var seen = {};
+
+    for (var i = 0; i < defs.length; i++) {
+      var def = defs[i];
+      if (def.closest('#' + CFG.badgeId)) continue;
+
+      var r = def.getBoundingClientRect();
+      if (r.height < 10 || r.width < 20) continue;
+
+      var meta = opCellMetaOf(def);
+      if (!meta) continue;
+      if (seen[meta.key]) continue;
+      seen[meta.key] = 1;
+      out.push(def);
+    }
+    return out;
+  }
+
+  // 取定义块"自己的"开头文本：跳过我们注入的勾选框，遇到第一个真实元素就停。
+  // 注入后 firstChild 变成了勾选框，不能直接读 firstChild.nodeValue。
+  function leadText(inner) {
+    var s = '';
+    for (var n = inner.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) { s += n.nodeValue; continue; }
+      if (n.nodeType === 1 && n.classList && n.classList.contains(CFG.wrapClass)) continue;
+      break;
+    }
+    return normText(s);
+  }
+
+  function opCellMetaOf(def) {
+    // 定义块自带 id（abs / add / ts_mean …），是比标题稳定得多的 key
+    var inner = def.querySelector('[id]') || def.firstElementChild || def;
+    var id = inner.id || def.id || '';
+
+    // 标题取定义块开头的签名文本："abs(x)"、"add(x, y, filter = false), x + y"
+    var title = leadText(inner);
+
+    // react-table 会复用行节点（翻页/搜索），缓存必须校验当前内容，否则 key 会串行
+    var cached = metaCache.get(def);
+    if (cached && cached.srcId === id && cached.srcText === title) return cached;
+
+    if (!title) title = normText(def.textContent).slice(0, 60);
+    if (!id && !title) return null;
+
+    var key = 'op|' + (id || title.toLowerCase().slice(0, 48));
+    var meta = { idx: null, title: title || id, key: key, srcId: id, srcText: title };
+    metaCache.set(def, meta);
+    return meta;
+  }
+
+  function collectOperatorTargets() {
+    var cells = findOperatorCells();
+    // 有 id 的单元格几乎可以确定就是操作符行；只有 1 条（筛选后）也算数
+    var hasId = false;
+    for (var k = 0; k < cells.length; k++) {
+      var m = metaCache.get(cells[k]);
+      if (m && m.srcId) { hasId = true; break; }
+    }
+    if (cells.length >= 2 || (cells.length === 1 && hasId)) {
+      var byCell = [];
+      for (var i = 0; i < cells.length; i++) byCell.push({ el: cells[i], mode: 'opcell' });
+      return byCell;
+    }
+    // 结构变了就退回按签名文本识别
+    var sigs = findOperatorItems();
+    var bySig = [];
+    for (var j = 0; j < sigs.length; j++) bySig.push({ el: sigs[j], mode: 'op' });
+    return bySig;
+  }
+
+  var opCellBoxCache = new WeakMap();
+
+  // 插到「定义内容」div 内部、签名文本之前：块级子元素会把行内勾选框挤到上一行，
+  // 所以必须进到内容 div 里面才能做到「☐ abs(x)」同一行。
+  function ensureOpCellBox(def, meta) {
+    var cached = opCellBoxCache.get(def);
+    if (cached && cached.isConnected) {
+      setVisual(cached, meta, isDone(meta.key));
+      return cached;
+    }
+
+    var inner = def.querySelector('[id]') || def.firstElementChild || def;
+
+    var existing = inner.querySelector('.' + CFG.wrapClass);
+    if (existing && existing.firstElementChild) {
+      opCellBoxCache.set(def, existing.firstElementChild);
+      setVisual(existing.firstElementChild, meta, isDone(meta.key));
+      return existing.firstElementChild;
+    }
+
+    var wrap = document.createElement('span');
+    wrap.className = CFG.wrapClass + ' ' + CFG.prependClass;
+
+    var box = createBox(meta);
+    wrap.appendChild(box);
+    inner.insertBefore(wrap, inner.firstChild);
+
+    opCellBoxCache.set(def, box);
+    setVisual(box, meta, isDone(meta.key));
+    return box;
+  }
 
   // 归一化：去掉零宽字符、不换行空格，压缩空白
   function normText(s) {
@@ -460,6 +576,14 @@
     return row;
   }
 
+  // 勾选框当前绑定的 meta。react-table 复用行节点时会用新的 meta 重绘同一个 box，
+  // 而 click 闭包里握着的还是创建时的旧 meta —— 必须走这个指针，否则会写错 key。
+  var boxMeta = new WeakMap();
+
+  function metaOfBox(box, fallback) {
+    return boxMeta.get(box) || fallback;
+  }
+
   // 自绘勾选框（不用原生 input）：原生 checkbox 若被 preventDefault 会回滚勾选状态，
   // 而行本身常常包在 <a> 里，必须阻止默认跳转。
   function createBox(meta) {
@@ -472,13 +596,13 @@
     box.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      commit(box, meta, box.getAttribute('aria-checked') !== 'true');
+      commit(box, metaOfBox(box, meta), box.getAttribute('aria-checked') !== 'true');
     });
     box.addEventListener('keydown', function (e) {
       if (e.key === ' ' || e.key === 'Enter' || e.key === 'Spacebar') {
         e.preventDefault();
         e.stopPropagation();
-        commit(box, meta, box.getAttribute('aria-checked') !== 'true');
+        commit(box, metaOfBox(box, meta), box.getAttribute('aria-checked') !== 'true');
       }
     });
     box.addEventListener('mousedown', function (e) {
@@ -517,9 +641,11 @@
   }
 
   function setVisual(box, meta, on) {
+    if (meta) boxMeta.set(box, meta);
     box.setAttribute('aria-checked', on ? 'true' : 'false');
     box.setAttribute('aria-label', (on ? '已学习：' : '标记为已学习：') + meta.title);
     box.title = on ? '已学习（点击取消）' : '点击标记为「已学习」';
+    if (meta.key) box.dataset.wqKey = meta.key;
   }
 
   function commit(box, meta, on) {
@@ -664,8 +790,8 @@
         var docs = findDocItems();
         for (var d = 0; d < docs.length; d++) items.push({ el: docs[d], mode: 'doc' });
       } else if (mode === 'op') {
-        var ops = findOperatorItems();
-        for (var o = 0; o < ops.length; o++) items.push({ el: ops[o], mode: 'op' });
+        var targets = collectOperatorTargets();
+        for (var o = 0; o < targets.length; o++) items.push({ el: targets[o].el, mode: targets[o].mode });
       } else {
         var rows = findRows();
         for (var i = 0; i < rows.length; i++) items.push({ el: rows[i], mode: 'lesson' });
@@ -675,9 +801,14 @@
       var total = 0;
       for (var k = 0; k < items.length; k++) {
         var it = items[k];
-        var meta = it.mode === 'doc' ? docMetaOf(it.el) : it.mode === 'op' ? opMetaOf(it.el) : metaOf(it.el);
+        var meta = it.mode === 'doc' ? docMetaOf(it.el)
+          : it.mode === 'op' ? opMetaOf(it.el)
+          : it.mode === 'opcell' ? opCellMetaOf(it.el)
+          : metaOf(it.el);
         if (!meta) continue;
-        var box = it.mode === 'op' ? ensureOpBox(it.el, meta) : ensureBox(it.el, meta, it.mode === 'doc');
+        var box = it.mode === 'op' ? ensureOpBox(it.el, meta)
+          : it.mode === 'opcell' ? ensureOpCellBox(it.el, meta)
+          : ensureBox(it.el, meta, it.mode === 'doc');
         if (!box) continue;
         total++;
         if (box.getAttribute('aria-checked') === 'true') done++;
@@ -717,10 +848,12 @@
   function schedule() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(function () {
+    // 用 setTimeout 而不是 requestAnimationFrame：rAF 在后台标签页/无帧环境不会触发，
+    // 会把 pending 永久卡在 true，之后所有重扫都被丢弃。
+    setTimeout(function () {
       pending = false;
       run();
-    });
+    }, 60);
   }
 
   var lastHref = location.href;
