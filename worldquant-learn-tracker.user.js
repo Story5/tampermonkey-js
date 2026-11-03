@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.2.3
+// @version      1.3.0
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -42,7 +42,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.2.3';
+  var VERSION = '1.3.0';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -298,8 +298,36 @@
   /* 识别操作符（/learn/operators：靠 "name(args)" 签名定位）              */
   /* ------------------------------------------------------------------ */
 
-  // rank(x) / ts_mean(x, d) / bucket(rank(x), range="0,1,0.1") —— 允许一层嵌套括号
-  var RE_SIG = /^[a-z][a-z0-9_]{0,40}\((?:[^()]|\([^()]*\))*\)$/i;
+  // rank(x) / ts_mean(x, d) / bucket(rank(x), range="0,1,0.1") —— 允许一层嵌套括号、允许名字与括号间有空格
+  var RE_SIG = /^[a-z][a-z0-9_]{0,40}\s*\((?:[^()]|\([^()]*\))*\)$/i;
+
+  // 归一化：去掉零宽字符、不换行空格，压缩空白
+  function normText(s) {
+    return String(s || '')
+      .replace(/[\u200b-\u200f\ufeff\u00a0\u3000]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function childIndex(el) {
+    var p = el.parentElement;
+    if (!p) return -1;
+    var idx = 0;
+    for (var c = p.firstElementChild; c; c = c.nextElementSibling) {
+      if (c === el) return idx;
+      idx++;
+    }
+    return -1;
+  }
+
+  // 子元素里已经有同文本的（说明当前是外层包装），交给更内层的元素处理
+  function hasInnerSameText(el, t) {
+    var kids = el.children;
+    for (var i = 0; i < kids.length; i++) {
+      if (normText(kids[i].textContent) === t) return true;
+    }
+    return false;
+  }
 
   function opCandidates(strict) {
     if (!document.body) return [];
@@ -310,26 +338,34 @@
 
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
-      if (el.childElementCount) continue; // 只认叶子节点，签名通常是独立的 code/chip
+      if (!el.tagName) continue;
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'NOSCRIPT') continue;
+      // 允许带子元素：语法高亮常把 rank(x) 拆成多个 span
+      if (el.childElementCount > 8) continue;
       if (el.closest('#' + CFG.badgeId)) continue;
       if (el.classList && (el.classList.contains(CFG.wrapClass) || el.classList.contains(CFG.boxClass))) continue;
 
-      var t = clean(el.textContent);
+      var t = normText(el.textContent);
       if (!t || t.length < 4 || t.length > 90) continue;
       if (!RE_SIG.test(t)) continue;
+      if (hasInnerSameText(el, t)) continue;
 
       var r = el.getBoundingClientRect();
       if (r.width < 16 || r.height < 8 || r.height > 48) continue;
 
       var p = el.parentElement;
       if (!p) continue;
-      var pt = clean(p.textContent);
-      // 严格模式：这一行必须就是从这个签名开始，排除正文里的用法举例
-      if (strict && pt.indexOf(t) !== 0) continue;
-      // 宽松模式：父块基本就是这一条（防止签名前面还有图标/序号之类）
-      if (!strict && (pt.length > 120 || Math.abs(pt.indexOf(t)) > 40)) continue;
+      var pt = normText(p.textContent);
 
-      var key = t.toLowerCase();
+      // 严格模式：行首就是签名；或签名是这一行的前几个元素之一（前面可能有图标/名称小标签），
+      // 且后面还得跟着兄弟元素（通常是描述块）—— 这样能排除正文里的行内举例
+      var atStart = pt.indexOf(t) === 0;
+      var early = childIndex(el) !== -1 && childIndex(el) <= 2 && !!el.nextElementSibling;
+      if (strict && !(atStart || early)) continue;
+      // 宽松模式：父块里出现过这个签名即可
+      if (!strict && pt.indexOf(t) === -1) continue;
+
+      var key = t.toLowerCase().replace(/\s+/g, '');
       if (seen[key]) continue;
       seen[key] = 1;
       out.push(el);
@@ -346,9 +382,9 @@
 
   function opMetaOf(leaf) {
     if (metaCache.has(leaf)) return metaCache.get(leaf);
-    var sig = clean(leaf.textContent);
+    var sig = normText(leaf.textContent);
     if (!sig) return null;
-    var meta = { idx: null, title: sig, key: 'op|' + sig.toLowerCase() };
+    var meta = { idx: null, title: sig, key: 'op|' + sig.toLowerCase().replace(/\s+/g, ' ') };
     metaCache.set(leaf, meta);
     return meta;
   }
