@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.5.1
+// @version      1.5.2
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）、帮助中心术语表（每个术语标题前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -46,7 +46,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.5.1';
+  var VERSION = '1.5.2';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -846,9 +846,17 @@
     }
     var txt = badge.querySelector('.wq-badge-text');
 
-    // 悬停徽标能看到版本 + 识别数，方便「框没出来」时不用开控制台就能反馈
-    badge.title = 'WorldQuant BRAIN 学习进度（保存在本机浏览器）\n' +
-      'v' + VERSION + ' · 识别 ' + (recognized == null ? total : recognized) + ' 条 / 页面 ' + total + ' 个框';
+    // 悬停徽标就能看到版本 / 页面类型 / 识别数，不用开控制台
+    var wq = null;
+    try { wq = window.__WQ; } catch (e) {}
+    var info = 'v' + VERSION;
+    if (wq && wq.mode) {
+      info += ' · mode=' + wq.mode +
+        ' · 识别 ' + (wq.items == null ? '?' : wq.items) + ' 条' +
+        ' / 页面 ' + (wq.boxes == null ? '?' : wq.boxes) + ' 个框';
+    }
+    if (wq && wq.error) info += ' · 最近出错: ' + wq.error;
+    badge.title = 'WorldQuant BRAIN 学习进度（保存在本机浏览器）\n' + info + '\n' + location.href;
 
     if (total <= 0) {
       if (!isListPage()) {
@@ -982,13 +990,13 @@
           if (live[live_i].getAttribute('aria-checked') === 'true') done++;
         }
       }
+      markState(mode, recognized, total);
       updateBadge(done, total, recognized);
 
       // 自检日志：在控制台里能直接看到脚本是否运行、当前页识别到多少条目
       selfCheck(mode, recognized, total);
     } catch (e) {
-      /* 页面结构变化时不让脚本整体挂掉 */
-      console && console.debug && console.debug('[wq-tracker]', e);
+      showRunError(e);
     } finally {
       observe();
     }
@@ -1007,23 +1015,52 @@
         total++;
         if (box.getAttribute('aria-checked') === 'true') done++;
       }
+      markState('glossary', total, total);
       updateBadge(done, total);
       selfCheck('glossary', total);
     } catch (e) {
-      console && console.debug && console.debug('[wq-tracker]', e);
+      showRunError(e);
     } finally {
       observe();
     }
   }
 
+  // 运行出错时把错误直接写在徽标上：不用开控制台就能知道「为什么一个框都没有」
+  function showRunError(e) {
+    var msg = (e && e.message) ? e.message : String(e || 'unknown');
+    try {
+      window.__WQ = window.__WQ || {};
+      window.__WQ.error = msg;
+    } catch (x) {}
+
+    var badge = ensureBadge();
+    badge.style.display = 'flex';
+    badge.style.opacity = '1';
+    badge.title = 'WorldQuant BRAIN 学习进度脚本运行出错\nv' + VERSION + ' · ' + location.href;
+    var txt = badge.querySelector('.wq-badge-text');
+    if (txt) txt.textContent = 'v' + VERSION + ' 出错 · ' + (msg.length > 60 ? msg.slice(0, 60) + '…' : msg);
+    if (typeof console !== 'undefined' && console.error) console.error('[wq-tracker]', e);
+  }
+
   var lastCheckKey = '';
 
-  function selfCheck(mode, recognized, live) {
-    // 给诊断片段 / 控制台留个标记，没装或没运行时可据此判断
-    var boxes = (live == null ? recognized : live);
+  // 把当前状态挂到 window.__WQ（诊断片段用），并且要在 updateBadge 之前调用，
+  // 这样徽标悬停提示里能带上版本/模式/识别数/框数
+  function markState(mode, recognized, boxes) {
     try {
-      window.__WQ = { version: VERSION, path: location.pathname, mode: mode, items: recognized, boxes: boxes };
+      window.__WQ = {
+        version: VERSION,
+        path: location.pathname,
+        mode: mode,
+        items: recognized,
+        boxes: (boxes == null ? recognized : boxes)
+      };
     } catch (e) {}
+  }
+
+  function selfCheck(mode, recognized, live) {
+    var boxes = (live == null ? recognized : live);
+    markState(mode, recognized, boxes);
 
     var key = mode + '|' + recognized + '|' + boxes + '|' + location.pathname;
     if (key === lastCheckKey) return; // 避免重渲染时刷屏
