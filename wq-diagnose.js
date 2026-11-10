@@ -140,6 +140,8 @@
     if (/^\d+\s*articles?$/i.test(ct)) continue;
     var cr = cand.getBoundingClientRect();
     if (cr.width < 60 || cr.height < 12 || cr.height > 90) continue;
+    // Cookie 同意弹窗（cky-* / cookie / consent）是纯噪音，排除
+    if (cand.closest && cand.closest('[class*="cky-"], [id*="cky"], [class*="cookie"], [id*="cookie"], [class*="consent"]')) continue;
     // 父节点（行规模）里已经有框 → 自己是已挂框行内部的东西（标题 span 等），不算
     var par = cand.parentElement;
     if (par && par.querySelector('.wq-lesson-box') && par.childElementCount <= 8) continue;
@@ -153,7 +155,7 @@
   });
   out.docRowsWithoutBox = {
     count: docMissInner.length,
-    samples: docMissInner.slice(0, 12).map(function (el) {
+    samples: docMissInner.slice(0, 20).map(function (el) {
       return {
         text: cut(clean(el.textContent), 60),
         where: sig(el) + '  in ' + sig(el.parentElement) + '  in ' + sig(el.parentElement && el.parentElement.parentElement),

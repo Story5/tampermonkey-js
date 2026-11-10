@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.5.4
+// @version      1.5.5
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）、帮助中心术语表（每个术语标题前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -46,7 +46,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.5.4';
+  var VERSION = '1.5.5';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -382,6 +382,27 @@
 
   function findDocItems() {
     if (!document.body) return [];
+
+    // 主路径：这个站点文档目录的行有稳定类名（learn__list-item），直接按类名取。
+    // 行内嵌套链接、没有 href、纯文本的行都能覆盖，不再依赖文本形状猜测。
+    var rows = document.body.querySelectorAll('.learn__list-item, .learn__list-item--visited');
+    if (rows.length >= 2) {
+      var direct = [];
+      for (var s = 0; s < rows.length; s++) {
+        var row = rows[s];
+        if (row.closest('#' + CFG.badgeId)) continue;
+        if (!row.getClientRects().length) continue; // 折叠/隐藏的行跳过
+        var t = clean(row.innerText || row.textContent);
+        if (!t || t.length < 2 || t.length > 200) continue;
+        direct.push(row);
+      }
+      if (direct.length >= 2) {
+        direct.sort(function (a, b) {
+          return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
+        });
+        return direct;
+      }
+    }
 
     var out = [];
     function addAll(list) {
@@ -1002,6 +1023,7 @@
 
       // 清理幽灵框：宿主行本轮没被识别、且已经不像文档条目了（React 复用后换了内容）。
   // 「仍像条目但本轮没走到」的行不动它，避免识别抖动时把正常的框摘掉。
+  // 另外宿主在某个识别行内部（旧识别粒度更细时留下的框）也摘掉，避免一行双框。
   function pruneOrphanDocBoxes(recognized) {
     var boxes = document.querySelectorAll('.' + CFG.boxClass);
     for (var i = 0; i < boxes.length; i++) {
@@ -1011,6 +1033,13 @@
       var host = wrap.parentElement;
       if (!host) { wrap.remove(); continue; }
       if (recognized.indexOf(host) !== -1) continue;
+
+      var inside = false;
+      for (var r = 0; r < recognized.length; r++) {
+        if (recognized[r].contains(host)) { inside = true; break; }
+      }
+      if (inside) { wrap.remove(); continue; }
+
       if (isDocItem(host, host.tagName === 'A')) continue;
       wrap.remove();
     }
