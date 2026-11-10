@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.5.0
+// @version      1.5.1
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）、帮助中心术语表（每个术语标题前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -46,13 +46,14 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.5.0';
+  var VERSION = '1.5.1';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
   // 时长，覆盖 "4m 15s" / "1m" / "55s" / "1:09" / "1h 2m"
   // 用 (?![a-z]) 做右边界、不用 \b，因为 DOM 里标题与时长可能是紧贴的（"Investing1m"）
-  var RE_DUR = /\d+\s*(?:h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)(?![a-z])|\b\d{1,2}:\d{2}\b/i;
+  // 冒号形式同理：左边界用 (?<!\d) 而不是 \b，否则 "Simulation1:09" 匹配不到
+  var RE_DUR = /\d+\s*(?:h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)(?![a-z])|(?<!\d)\d{1,2}:\d{2}(?!\d)/i;
   // 行尾的时长，用于从标题里剔除
   var RE_TAIL_DUR = /(?:\d+\s*(?:h|hr|hrs|hour|hours)\s*)?(?:\d+\s*(?:m|min|mins|minute|minutes)\s*)?\d+\s*(?:s|sec|secs|second|seconds)\s*$|\d+\s*(?:m|min|mins|minute|minutes)\s*$|\d{1,2}:\d{2}\s*$/i;
   // 文档页每个分组下方的 "7 Articles" 统计
@@ -336,6 +337,34 @@
     return out;
   }
 
+  // 少数条目没有 href（渲染成普通 div），只按链接找就会漏掉。
+  // 和已命中的链接行同级、形状相同、且自身不含链接的元素，补进来。
+  function isDocRowBlock(el) {
+    if (!isDocItem(el, false)) return false;
+    if (el.querySelector('a[href]')) return false; // 含链接的要么是容器，要么已被链接行覆盖
+    var r = el.getBoundingClientRect();
+    if (r.height > 40) return false; // 单行高度，排除整段区块
+    return true;
+  }
+
+  function docRowsBeside(anchors) {
+    var parents = [];
+    var out = [];
+    for (var i = 0; i < anchors.length; i++) {
+      var par = anchors[i].parentElement;
+      if (!par || par === document.body) continue;
+      if (parents.indexOf(par) !== -1) continue;
+      parents.push(par);
+
+      for (var c = par.firstElementChild; c; c = c.nextElementSibling) {
+        if (c.nodeType !== 1) continue;
+        if (anchors.indexOf(c) !== -1 || out.indexOf(c) !== -1) continue;
+        if (isDocRowBlock(c)) out.push(c);
+      }
+    }
+    return out;
+  }
+
   function findDocItems() {
     if (!document.body) return [];
 
@@ -356,7 +385,12 @@
       var p = el.parentElement;
       for (var up = 0; up < 4 && p && p !== document.body; up++) {
         var items = docItemCandidates(p, true);
-        if (items.length < 2) items = docItemCandidates(p, false);
+        if (items.length >= 2) {
+          addAll(items);
+          addAll(docRowsBeside(items)); // 补上同组里没有 href 的行
+          break;
+        }
+        items = docItemCandidates(p, false);
         if (items.length >= 2) {
           addAll(items);
           break;
@@ -804,13 +838,17 @@
     return isGlossaryPage() || isDocPage() || isOperatorPage() || /^\/learn\/courses\/[^/]+\/?$/.test(location.pathname);
   }
 
-  function updateBadge(done, total) {
+  function updateBadge(done, total, recognized) {
     var badge = document.getElementById(CFG.badgeId);
     if (!badge) {
       if (total <= 0 && !isListPage()) return;
       badge = ensureBadge();
     }
     var txt = badge.querySelector('.wq-badge-text');
+
+    // 悬停徽标能看到版本 + 识别数，方便「框没出来」时不用开控制台就能反馈
+    badge.title = 'WorldQuant BRAIN 学习进度（保存在本机浏览器）\n' +
+      'v' + VERSION + ' · 识别 ' + (recognized == null ? total : recognized) + ' 条 / 页面 ' + total + ' 个框';
 
     if (total <= 0) {
       if (!isListPage()) {
@@ -932,10 +970,22 @@
         total++;
         if (box.getAttribute('aria-checked') === 'true') done++;
       }
-      updateBadge(done, total);
+
+      // 页面上可能存在上一轮渲染留下的框（React 复用节点），本轮没再识别到。
+      // 它们还在、还能点，进度按「实际存在的框」算才不会和肉眼看到的对不上。
+      var recognized = total;
+      var live = document.querySelectorAll('.' + CFG.boxClass);
+      if (live.length > recognized) {
+        done = 0;
+        total = live.length;
+        for (var live_i = 0; live_i < live.length; live_i++) {
+          if (live[live_i].getAttribute('aria-checked') === 'true') done++;
+        }
+      }
+      updateBadge(done, total, recognized);
 
       // 自检日志：在控制台里能直接看到脚本是否运行、当前页识别到多少条目
-      selfCheck(mode, total);
+      selfCheck(mode, recognized, total);
     } catch (e) {
       /* 页面结构变化时不让脚本整体挂掉 */
       console && console.debug && console.debug('[wq-tracker]', e);
@@ -968,20 +1018,22 @@
 
   var lastCheckKey = '';
 
-  function selfCheck(mode, total) {
+  function selfCheck(mode, recognized, live) {
     // 给诊断片段 / 控制台留个标记，没装或没运行时可据此判断
+    var boxes = (live == null ? recognized : live);
     try {
-      window.__WQ = { version: VERSION, path: location.pathname, mode: mode, items: total };
+      window.__WQ = { version: VERSION, path: location.pathname, mode: mode, items: recognized, boxes: boxes };
     } catch (e) {}
 
-    var key = mode + '|' + total + '|' + location.pathname;
+    var key = mode + '|' + recognized + '|' + boxes + '|' + location.pathname;
     if (key === lastCheckKey) return; // 避免重渲染时刷屏
     lastCheckKey = key;
     if (typeof console === 'undefined' || !console.log) return;
     // 用 log 而不是 debug：Chrome 默认级别不显示 debug，排障时看不到
     console.log(
-      '[WQ] v' + VERSION + ' path=' + location.pathname + ' mode=' + mode + ' items=' + total +
-      (total === 0 ? '  ← 没识别到条目，请执行 wq-diagnose.js 并把输出发给开发者' : '')
+      '[WQ] v' + VERSION + ' path=' + location.pathname + ' mode=' + mode + ' items=' + recognized +
+      (boxes !== recognized ? ' boxes=' + boxes + '（有框没被本轮识别，可能漏了条目）' : '') +
+      (recognized === 0 ? '  ← 没识别到条目，请执行 wq-diagnose.js 并把输出发给开发者' : '')
     );
   }
 
