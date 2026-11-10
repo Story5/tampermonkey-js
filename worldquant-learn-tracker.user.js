@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.5.3
+// @version      1.5.4
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）、帮助中心术语表（每个术语标题前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -46,7 +46,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.5.3';
+  var VERSION = '1.5.4';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -337,13 +337,28 @@
     return out;
   }
 
-  // 少数条目没有 href（渲染成普通 div），只按链接找就会漏掉。
-  // 和已命中的链接行同级、形状相同、且自身不含链接的元素，补进来。
+  // 少数条目没有 href，甚至没有图标元素（图标可能只是 CSS 背景/文本符号）。
+  // 只在「已命中链接行的同级」里找，且必须是单行、非交互元素，避免误伤按钮/分组头。
   function isDocRowBlock(el) {
-    if (!isDocItem(el, false)) return false;
+    if (!el || el.nodeType !== 1) return false;
+    if (el.closest('#' + CFG.badgeId)) return false;
+    if (el.classList && (el.classList.contains(CFG.wrapClass) || el.classList.contains(CFG.boxClass))) return false;
+
+    var tag = el.tagName;
+    if (tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return false;
+    if (tag === 'NAV' || tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4' || tag === 'H5') return false;
+    if (el.getAttribute && el.getAttribute('role') === 'button') return false;
+    var cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+    if (/\bbtn\b|button/.test(cls)) return false;
+
     if (el.querySelector('a[href]')) return false; // 含链接的要么是容器，要么已被链接行覆盖
+
+    var t = clean(el.innerText || el.textContent);
+    if (!t || t.length < 2 || t.length > 140) return false;
+    if (RE_ARTICLES.test(t)) return false;
+
     var r = el.getBoundingClientRect();
-    if (r.height > 40) return false; // 单行高度，排除整段区块
+    if (r.width < 60 || r.height < 12 || r.height > 40) return false; // 单行，排除整段区块
     return true;
   }
 

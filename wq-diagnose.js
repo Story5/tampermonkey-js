@@ -126,20 +126,23 @@
 
   out.samples.lessonRows = lesson.slice(0, 2).map(function (el) { return cut(el.outerHTML, 700); });
 
-  // Documentation 页：长得像条目但没挂上勾选框的行（只取最内层），能直接看出漏的是哪几条
+  // Documentation 页：没有勾选框、但看起来像「一行条目」的元素。
+  // 刻意比正式识别宽松（不要求图标、不要求是链接），宁多勿漏 —— 否则漏掉的行
+  // 恰好是因为不满足某个条件而被拒的，诊断里也看不到，等于白查。
   var docMiss = [];
   for (var m2 = 0; m2 < all.length; m2++) {
     var cand = all[m2];
-    if (cand.id === 'wq-learn-badge') continue;
+    if (cand.closest && cand.closest('#wq-learn-badge')) continue;
     if (cand.classList && (cand.classList.contains('wq-box-wrap') || cand.classList.contains('wq-lesson-box'))) continue;
-    if (cand.querySelector && cand.querySelector('.wq-lesson-box')) continue;
+    if (cand.querySelector && cand.querySelector('.wq-lesson-box, .wq-box-wrap')) continue;
     var ct = clean(cand.textContent);
     if (!ct || ct.length < 2 || ct.length > 140) continue;
     if (/^\d+\s*articles?$/i.test(ct)) continue;
-    if (cand.childElementCount < 1 || cand.childElementCount > 6) continue;
-    if (!cand.querySelector('svg,img,i,[class*="icon"],[class*="Icon"],[class*="fa-"]')) continue;
     var cr = cand.getBoundingClientRect();
-    if (cr.width < 80 || cr.height < 12 || cr.height > 64) continue;
+    if (cr.width < 60 || cr.height < 12 || cr.height > 90) continue;
+    // 父节点（行规模）里已经有框 → 自己是已挂框行内部的东西（标题 span 等），不算
+    var par = cand.parentElement;
+    if (par && par.querySelector('.wq-lesson-box') && par.childElementCount <= 8) continue;
     docMiss.push(cand);
   }
   var docMissInner = docMiss.filter(function (el) {
@@ -150,12 +153,19 @@
   });
   out.docRowsWithoutBox = {
     count: docMissInner.length,
-    samples: docMissInner.slice(0, 10).map(function (el) {
+    samples: docMissInner.slice(0, 12).map(function (el) {
       return {
         text: cut(clean(el.textContent), 60),
         where: sig(el) + '  in ' + sig(el.parentElement) + '  in ' + sig(el.parentElement && el.parentElement.parentElement),
+        tag: el.tagName,
         href: el.tagName === 'A' ? (el.getAttribute('href') || '(无 href)') : '(非链接)',
-        html: cut(el.outerHTML, 320)
+        kids: el.childElementCount,
+        hasIcon: !!(el.querySelector && el.querySelector('svg,img,i,[class*="icon"],[class*="Icon"],[class*="fa-"]')),
+        rect: (function () {
+          var r2 = el.getBoundingClientRect();
+          return Math.round(r2.width) + 'x' + Math.round(r2.height);
+        })(),
+        html: cut(el.outerHTML, 300)
       };
     })
   };
