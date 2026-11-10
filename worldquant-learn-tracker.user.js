@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.5.2
+// @version      1.5.3
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）、帮助中心术语表（每个术语标题前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -46,7 +46,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.5.2';
+  var VERSION = '1.5.3';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -964,6 +964,7 @@
 
       var done = 0;
       var total = 0;
+      var got = [];
       for (var k = 0; k < items.length; k++) {
         var it = items[k];
         var meta = it.mode === 'doc' ? docMetaOf(it.el)
@@ -976,10 +977,31 @@
           : ensureBox(it.el, meta, it.mode === 'doc');
         if (!box) continue;
         total++;
+        got.push(it.el);
         if (box.getAttribute('aria-checked') === 'true') done++;
       }
 
-      // 页面上可能存在上一轮渲染留下的框（React 复用节点），本轮没再识别到。
+      // React 复用节点后，有些行的内容变了、不再像文档条目，
+      // 留在里面的框就成了幽灵 —— 页面框数会比识别数多，进度也对不上。清掉。
+      if (mode === 'doc') pruneOrphanDocBoxes(got);
+
+      // 清理幽灵框：宿主行本轮没被识别、且已经不像文档条目了（React 复用后换了内容）。
+  // 「仍像条目但本轮没走到」的行不动它，避免识别抖动时把正常的框摘掉。
+  function pruneOrphanDocBoxes(recognized) {
+    var boxes = document.querySelectorAll('.' + CFG.boxClass);
+    for (var i = 0; i < boxes.length; i++) {
+      var box = boxes[i];
+      var wrap = box.parentElement;
+      if (!wrap || !wrap.classList || !wrap.classList.contains(CFG.wrapClass)) continue;
+      var host = wrap.parentElement;
+      if (!host) { wrap.remove(); continue; }
+      if (recognized.indexOf(host) !== -1) continue;
+      if (isDocItem(host, host.tagName === 'A')) continue;
+      wrap.remove();
+    }
+  }
+
+  // 页面上可能存在上一轮渲染留下的框（React 复用节点），本轮没再识别到。
       // 它们还在、还能点，进度按「实际存在的框」算才不会和肉眼看到的对不上。
       var recognized = total;
       var live = document.querySelectorAll('.' + CFG.boxClass);
