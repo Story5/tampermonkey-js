@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorldQuant BRAIN 学习进度记录
 // @namespace    https://platform.worldquantbrain.com/
-// @version      1.5.5
+// @version      1.5.6
 // @description  在 BRAIN Learn 的课程目录（课节右侧）、Documentation 文档目录（条目前）、Operators 操作符（签名前）、帮助中心术语表（每个术语标题前）加勾选框，点击标记「已学习」，状态保存在本机浏览器，下次打开自动恢复；右下角显示当前页面进度并可一键重置。
 // @author       story5
 // @license      MIT
@@ -46,7 +46,7 @@
     badgeId: 'wq-learn-badge'
   };
 
-  var VERSION = '1.5.5';
+  var VERSION = '1.5.6';
 
   // 行首的课序号，例如 "1. What is an Alpha" / "13)" / "7、"
   var RE_NUM = /^(\d{1,3})\s*[.)．、]\s*/;
@@ -798,6 +798,27 @@
     return box;
   }
 
+  // 文档页的结构化行（.learn__list-item）是 flex 容器：里面是「图标+标题」一组、右侧徽章一组，
+  // 靠 space-between / margin-auto 分居两端。若把勾选框直接塞成行的第一个子节点，行的子节点数
+  // 从 2 变 3，分布被重新计算，原本靠左的标题会被推到右边（v1.5.5 的布局问题）。
+  // 所以往下钻一层，插进「图标+标题」那个容器里、图标之前，行的分栏结构保持不变。
+  function prependTarget(row) {
+    if (!row || !row.querySelector) return row;
+
+    // 1) 行的直接子容器 learn__list-item-info（图标 + 标题都在里面），最理想
+    var info = row.querySelector('.learn__list-item-info');
+    if (info && info.parentElement === row) return info;
+
+    // 2) 退而求其次：标题所在的那一层（但别钻进嵌套 <a>，否则框会落到图标后面）
+    var title = row.querySelector('.learn__list-item-title');
+    if (title && title.parentElement && title.parentElement !== row &&
+        title.parentElement.tagName !== 'A') {
+      return title.parentElement;
+    }
+
+    return row;
+  }
+
   function ensureBox(row, meta, prepend) {
     var host = attachPoint(row);
     if (!host) return null;
@@ -809,8 +830,12 @@
       wrap.className = CFG.wrapClass + (prepend ? ' ' + CFG.prependClass : '');
 
       wrap.appendChild(createBox(meta));
-      if (prepend) host.insertBefore(wrap, host.firstChild);
-      else host.appendChild(wrap);
+      if (prepend) {
+        var target = prependTarget(host);
+        target.insertBefore(wrap, target.firstChild);
+      } else {
+        host.appendChild(wrap);
+      }
     }
 
     var el = wrap.firstElementChild;
@@ -1024,12 +1049,22 @@
       // 清理幽灵框：宿主行本轮没被识别、且已经不像文档条目了（React 复用后换了内容）。
   // 「仍像条目但本轮没走到」的行不动它，避免识别抖动时把正常的框摘掉。
   // 另外宿主在某个识别行内部（旧识别粒度更细时留下的框）也摘掉，避免一行双框。
+  // 注意：勾选框可能就挂在识别行内部的子容器上（learn__list-item-info），所以本轮正在用的框
+  // 要先收集成白名单，否则会被「在识别行内部 → 视为残留」这条规则误删。
   function pruneOrphanDocBoxes(recognized) {
+    var keep = [];
+    for (var k = 0; k < recognized.length; k++) {
+      var own = recognized[k].querySelector('.' + CFG.wrapClass);
+      if (own) keep.push(own);
+    }
+
     var boxes = document.querySelectorAll('.' + CFG.boxClass);
     for (var i = 0; i < boxes.length; i++) {
       var box = boxes[i];
       var wrap = box.parentElement;
       if (!wrap || !wrap.classList || !wrap.classList.contains(CFG.wrapClass)) continue;
+      if (keep.indexOf(wrap) !== -1) continue;
+
       var host = wrap.parentElement;
       if (!host) { wrap.remove(); continue; }
       if (recognized.indexOf(host) !== -1) continue;
