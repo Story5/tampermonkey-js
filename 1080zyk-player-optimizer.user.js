@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         1080zyk 播放列表优化
 // @namespace    https://github.com/Story5/tampermonkey-js
-// @version      1.1.5
-// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、手动切换正/倒序、一键复制全部链接、按年复制
+// @version      1.1.6
+// @description  统一播放列表，去除 zykyun 和 1080zyk 重复项，支持源切换、日期展示、点击复制链接、手动切换正/倒序、一键复制全部链接、按年复制、多选复制
 // @author       Story5
 // @license      MIT
 // @match        *://1080zyk1.com/*
@@ -332,6 +332,71 @@
 .zyk-grid::-webkit-scrollbar-thumb:hover {
     background: #b0b0b0;
 }
+
+/* ===== 多选复制 ===== */
+/* 信息栏中的「多选」切换按钮 */
+.zyk-sort-btn.zyk-multi-btn:hover {
+    border-color: #fa8c16;
+    color: #fa8c16;
+}
+.zyk-sort-btn.zyk-multi-btn.active {
+    background: #fa8c16;
+    border-color: #fa8c16;
+    color: #fff;
+}
+
+/* 多选操作条（仅在多选模式显示） */
+.zyk-select-bar {
+    display: none;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 16px;
+    background: #fffbe6;
+    border-bottom: 1px solid #ffe58f;
+}
+.zyk-select-count {
+    font-size: 13px;
+    color: #ad6800;
+    font-weight: 600;
+    margin-right: auto;
+}
+.zyk-select-bar .zyk-sort-btn {
+    font-size: 12px;
+}
+.zyk-sort-btn.zyk-copy-selected {
+    border-color: #52c41a;
+    color: #52c41a;
+}
+.zyk-sort-btn.zyk-copy-selected:hover {
+    background: #52c41a;
+    border-color: #52c41a;
+    color: #fff;
+}
+.zyk-sort-btn.zyk-copy-selected.copied {
+    background: #52c41a;
+    border-color: #52c41a;
+    color: #fff;
+}
+.zyk-sort-btn.zyk-select-all:hover {
+    border-color: #4A90D9;
+    color: #4A90D9;
+}
+.zyk-sort-btn.zyk-clear-sel:hover {
+    border-color: #ff4d4f;
+    color: #ff4d4f;
+}
+
+/* 多选模式下被选中的日期按钮 */
+.zyk-date.selected {
+    background: #e6f4ff;
+    border-color: #4A90D9;
+    color: #2b7de9;
+    font-weight: 600;
+}
+.zyk-date.selected::before {
+    content: '✓ ';
+}
 `;
 
     // ==================== 工具函数 ====================
@@ -441,9 +506,20 @@
      * 显示复制成功的 toast
      * @param {string} label - 展示文案（日期或集数）
      * @param {string} url - 视频链接
+     * @param {boolean} plain - 为 true 时只显示纯提示文案（不显示"已复制"与链接）
      */
-    function showToast(label, url) {
+    function showToast(label, url, plain = false) {
         const toast = getToast();
+
+        if (plain) {
+            toast.innerHTML = `<span class="zyk-toast-icon">&#9888;</span> ${label}`;
+            toast.classList.add('show');
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => {
+                toast.classList.remove('show');
+            }, 2200);
+            return;
+        }
 
         // 显示域名部分作为简短提示
         let urlPreview = '';
@@ -499,6 +575,11 @@
         info.className = 'zyk-info';
         panel.appendChild(info);
 
+        // -- 多选操作条 --
+        const selectBar = document.createElement('div');
+        selectBar.className = 'zyk-select-bar';
+        panel.appendChild(selectBar);
+
         // -- 日期网格 --
         const grid = document.createElement('div');
         grid.className = 'zyk-grid';
@@ -509,16 +590,128 @@
         // 每个播放源当前的排序方向：'asc' 正序 / 'desc' 倒序
         // 初始为 null，首次渲染时根据数据类型决定默认值
         const sortStates = sourcesData.map(() => null);
+        // 多选模式开关 + 每个播放源各自维护的已选链接集合
+        let multiSelectMode = false;
+        const selectedBySource = sourcesData.map(() => new Set());
+
+        // -- 多选操作条内容 --
+        const selectCount = document.createElement('span');
+        selectCount.className = 'zyk-select-count';
+        selectBar.appendChild(selectCount);
+
+        const selectAllBtn = document.createElement('button');
+        selectAllBtn.className = 'zyk-sort-btn zyk-select-all';
+        selectAllBtn.textContent = '全选';
+        selectAllBtn.title = '选中当前源的全部条目';
+        selectAllBtn.addEventListener('click', () => {
+            const set = selectedBySource[activeIndex];
+            sourcesData[activeIndex].episodes.forEach(ep => set.add(ep.url));
+            syncSelectedStyles();
+            updateSelectBar();
+        });
+        selectBar.appendChild(selectAllBtn);
+
+        const clearSelBtn = document.createElement('button');
+        clearSelBtn.className = 'zyk-sort-btn zyk-clear-sel';
+        clearSelBtn.textContent = '清空选择';
+        clearSelBtn.title = '清除当前源的选中状态';
+        clearSelBtn.addEventListener('click', () => {
+            selectedBySource[activeIndex].clear();
+            syncSelectedStyles();
+            updateSelectBar();
+        });
+        selectBar.appendChild(clearSelBtn);
+
+        const copySelBtn = document.createElement('button');
+        copySelBtn.className = 'zyk-sort-btn zyk-copy-selected';
+        copySelBtn.textContent = '复制所选';
+        copySelBtn.title = '按当前显示顺序复制已选中的视频链接';
+        copySelBtn.addEventListener('click', async () => {
+            const set = selectedBySource[activeIndex];
+            if (set.size === 0) {
+                showToast('请先选择要复制的条目', '', true);
+                return;
+            }
+            const { ordered } = getOrderedEpisodes(activeIndex);
+            const chosen = ordered.filter(ep => set.has(ep.url));
+            const ok = await copyToClipboard(chosen.map(ep => ep.url).join('\n'));
+            if (ok) {
+                copySelBtn.classList.add('copied');
+                showToast(`所选 ${chosen.length} 条`, chosen[0]?.url || '');
+                setTimeout(() => copySelBtn.classList.remove('copied'), 800);
+            }
+        });
+        selectBar.appendChild(copySelBtn);
+
+        /** 同步当前网格中按钮的选中样式 */
+        function syncSelectedStyles() {
+            const set = selectedBySource[activeIndex];
+            grid.querySelectorAll('.zyk-date').forEach(b => {
+                b.classList.toggle('selected', set.has(b.dataset.url));
+            });
+        }
+
+        /** 刷新多选操作条的显示与计数 */
+        function updateSelectBar() {
+            selectBar.style.display = multiSelectMode ? 'flex' : 'none';
+            grid.classList.toggle('multi-active', multiSelectMode);
+            selectCount.textContent = multiSelectMode
+                ? `多选模式 · 已选 ${selectedBySource[activeIndex].size} 项`
+                : '';
+        }
+
+        /**
+         * 按当前排序方向 / 分组规则返回有序集数列表
+         * （供「全部复制」与「复制所选」共用，保证复制顺序与展示顺序一致）
+         */
+        function getOrderedEpisodes(index) {
+            const src = sourcesData[index];
+            const eps = src.episodes;
+            const dateItems = eps.filter(ep => ep.dateStr);
+            const yearSet = new Set(dateItems.map(ep => ep.dateStr.substring(0, 4)));
+            const shouldGroup = yearSet.size >= 2;
+            const defaultOrder = shouldGroup ? 'desc' : 'asc';
+            const order = sortStates[index] || defaultOrder;
+            const cmp = (a, b) =>
+                a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
+            let ordered;
+            if (shouldGroup) {
+                const sortedDates = [...dateItems].sort((a, b) =>
+                    order === 'desc' ? b.dateStr.localeCompare(a.dateStr) : a.dateStr.localeCompare(b.dateStr)
+                );
+                const nonDates = eps.filter(ep => !ep.dateStr).sort((a, b) =>
+                    order === 'desc' ? cmp(b, a) : cmp(a, b)
+                );
+                ordered = [...sortedDates, ...nonDates];
+            } else {
+                ordered = [...eps].sort((a, b) => order === 'desc' ? cmp(b, a) : cmp(a, b));
+            }
+            return { ordered, shouldGroup, order };
+        }
 
         /**
          * 构造单个日期/集数按钮
          */
-        function makeDateBtn(ep) {
+        function makeDateBtn(ep, index) {
             const btn = document.createElement('button');
             btn.className = 'zyk-date';
             btn.textContent = ep.label;
             btn.title = `${ep.label} — ${ep.url}`;
+            btn.dataset.url = ep.url;
+            if (selectedBySource[index].has(ep.url)) btn.classList.add('selected');
             btn.addEventListener('click', async () => {
+                if (multiSelectMode) {
+                    const set = selectedBySource[index];
+                    if (set.has(ep.url)) {
+                        set.delete(ep.url);
+                        btn.classList.remove('selected');
+                    } else {
+                        set.add(ep.url);
+                        btn.classList.add('selected');
+                    }
+                    updateSelectBar();
+                    return;
+                }
                 const ok = await copyToClipboard(ep.url);
                 if (ok) {
                     btn.classList.add('copied');
@@ -547,7 +740,8 @@
             const order = sortStates[index];
 
             // 更新统计信息 + 排序按钮
-            info.innerHTML = `<span class="zyk-info-text"><strong>${src.name}</strong> &middot; 共 <strong>${eps.length}</strong> 集 &middot; 点击可复制视频链接</span>`;
+            const hint = multiSelectMode ? '多选模式：点击条目进行选择' : '点击可复制视频链接';
+            info.innerHTML = `<span class="zyk-info-text"><strong>${src.name}</strong> &middot; 共 <strong>${eps.length}</strong> 集 &middot; ${hint}</span>`;
             const sortBtn = document.createElement('button');
             sortBtn.className = 'zyk-sort-btn';
             sortBtn.textContent = order === 'desc' ? '倒序' : '正序';
@@ -564,20 +758,7 @@
             copyAllBtn.textContent = '全部复制';
             copyAllBtn.title = '复制当前列表所有视频链接';
             copyAllBtn.addEventListener('click', async () => {
-                const cmp = (a, b) =>
-                    a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
-                let ordered;
-                if (shouldGroup) {
-                    const sortedDates = [...dateItems].sort((a, b) =>
-                        order === 'desc' ? b.dateStr.localeCompare(a.dateStr) : a.dateStr.localeCompare(b.dateStr)
-                    );
-                    const nonDates = eps.filter(ep => !ep.dateStr).sort((a, b) =>
-                        order === 'desc' ? cmp(b, a) : cmp(a, b)
-                    );
-                    ordered = [...sortedDates, ...nonDates];
-                } else {
-                    ordered = [...eps].sort((a, b) => order === 'desc' ? cmp(b, a) : cmp(a, b));
-                }
+                const { ordered } = getOrderedEpisodes(index);
                 const text = ordered.map(ep => ep.url).join('\n');
                 const ok = await copyToClipboard(text);
                 if (ok) {
@@ -587,6 +768,18 @@
                 }
             });
             info.appendChild(copyAllBtn);
+
+            // 多选模式切换按钮
+            const multiBtn = document.createElement('button');
+            multiBtn.className = 'zyk-sort-btn zyk-multi-btn' + (multiSelectMode ? ' active' : '');
+            multiBtn.textContent = multiSelectMode ? '退出多选' : '多选';
+            multiBtn.title = multiSelectMode ? '退出多选模式' : '开启后点击条目可多选，再一键复制所选链接';
+            multiBtn.addEventListener('click', () => {
+                multiSelectMode = !multiSelectMode;
+                if (!multiSelectMode) selectedBySource.forEach(s => s.clear());
+                renderGrid(activeIndex);
+            });
+            info.appendChild(multiBtn);
 
             log(`renderGrid: ${src.name}, shouldGroup=${shouldGroup}, order=${order}, eps=${eps.length}`);
 
@@ -647,7 +840,7 @@
 
                     const yearGrid = document.createElement('div');
                     yearGrid.className = 'zyk-year-grid';
-                    yearEps.forEach(ep => yearGrid.appendChild(makeDateBtn(ep)));
+                    yearEps.forEach(ep => yearGrid.appendChild(makeDateBtn(ep, index)));
                     group.appendChild(yearGrid);
                     grid.appendChild(group);
                 });
@@ -664,7 +857,7 @@
 
                     const flatGrid = document.createElement('div');
                     flatGrid.className = 'zyk-year-grid';
-                    nonDates.forEach(ep => flatGrid.appendChild(makeDateBtn(ep)));
+                    nonDates.forEach(ep => flatGrid.appendChild(makeDateBtn(ep, index)));
                     grid.appendChild(flatGrid);
                 }
             } else {
@@ -672,9 +865,12 @@
                 const sorted = [...eps].sort((a, b) => order === 'desc' ? compareLabel(b, a) : compareLabel(a, b));
                 const flatGrid = document.createElement('div');
                 flatGrid.className = 'zyk-year-grid';
-                sorted.forEach(ep => flatGrid.appendChild(makeDateBtn(ep)));
+                sorted.forEach(ep => flatGrid.appendChild(makeDateBtn(ep, index)));
                 grid.appendChild(flatGrid);
             }
+
+            // 同步多选操作条显示状态（切换标签 / 排序 / 进入退出多选后）
+            updateSelectBar();
         }
 
         // 绑定标签点击事件
